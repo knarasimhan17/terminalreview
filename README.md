@@ -18,6 +18,16 @@ belonged to them.
 
 ## Install
 
+Run the setup script from the repository checkout:
+
+```sh
+./setup.sh
+```
+
+The script installs `trv`, bootstraps Rust when needed, and installs `tmux` when
+a supported package manager is available. To install only the binary with an
+existing Rust toolchain, run:
+
 ```sh
 cargo install --path .
 ```
