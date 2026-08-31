@@ -9,12 +9,14 @@ pub(crate) enum Side {
     New,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum CommentState {
     Open,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct Comment {
     pub(crate) path: String,
