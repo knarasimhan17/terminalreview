@@ -2,6 +2,7 @@ mod cli;
 mod diff;
 mod git;
 mod model;
+mod persistence;
 
 use std::collections::BTreeSet;
 use std::env;
@@ -13,7 +14,8 @@ use clap::Parser;
 use crate::cli::{Cli, Command};
 use crate::diff::{DiffLineKind, ParsedDiff};
 use crate::git::Repository;
-use crate::model::Side;
+use crate::model::{Comment, Side};
+use crate::persistence::{list_revisions, persist_revision};
 
 fn main() -> ExitCode {
     match run() {
@@ -27,24 +29,47 @@ fn main() -> ExitCode {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    let current_dir = env::current_dir().context("current directory is unavailable")?;
+    let repository = Repository::discover(&current_dir)?;
+
     match cli.command {
-        Some(Command::Revs) => bail!("revs command is not implemented"),
-        None => prepare_review(cli.revset.as_deref(), cli.stdout),
+        Some(Command::Revs) => print_revisions(&repository),
+        None => run_review(&repository, cli.revset.as_deref(), cli.stdout),
     }
 }
 
-fn prepare_review(revset: Option<&str>, stdout: bool) -> Result<()> {
-    let current_dir = env::current_dir().context("current directory is unavailable")?;
-    let repository = Repository::discover(&current_dir)?;
+fn print_revisions(repository: &Repository) -> Result<()> {
+    let thread = repository.current_thread()?;
+    for revision in list_revisions(repository.git_dir(), &thread)? {
+        println!(
+            "{}\t{}\t{}\t{}",
+            revision.rev,
+            revision.timestamp,
+            revision.comments.len(),
+            revision.base_commit_sha
+        );
+    }
+    Ok(())
+}
+
+fn run_review(repository: &Repository, revset: Option<&str>, stdout: bool) -> Result<()> {
+    let thread = repository.current_thread()?;
     let prepared = repository.prepare_review(revset)?;
     let diff = ParsedDiff::parse(&prepared.diff);
-    let summary = summarize_diff(&diff);
+    let comments = collect_comments(&diff)?;
+    let revision = persist_revision(repository, &thread, &prepared, comments)?;
     let export_target = if stdout { "stdout" } else { "clipboard" };
 
     bail!(
-        "review UI is not implemented; prepared {summary} from {} to {} for {export_target}",
-        prepared.base_commit_sha,
-        prepared.tree_sha
+        "comment export to {export_target} is not implemented after saving rev-{}",
+        revision.rev
+    )
+}
+
+fn collect_comments(diff: &ParsedDiff) -> Result<Vec<Comment>> {
+    bail!(
+        "review UI is not implemented; prepared {}",
+        summarize_diff(diff)
     )
 }
 

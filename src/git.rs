@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -6,6 +7,7 @@ use anyhow::{bail, Context, Result};
 
 pub(crate) struct Repository {
     root: PathBuf,
+    git_dir: PathBuf,
 }
 
 pub(crate) struct PreparedReview {
@@ -20,8 +22,32 @@ impl Repository {
             git_text(start, &["rev-parse", "--show-toplevel"], None, None, false)
                 .context("current directory is not inside a Git repository")?,
         );
+        let common_dir = git_text(&root, &["rev-parse", "--git-common-dir"], None, None, false)?;
+        let common_dir = PathBuf::from(common_dir);
+        let git_dir = if common_dir.is_absolute() {
+            common_dir
+        } else {
+            root.join(common_dir)
+        };
+        let git_dir = fs::canonicalize(&git_dir)
+            .with_context(|| format!("failed to resolve {}", git_dir.display()))?;
 
-        Ok(Self { root })
+        Ok(Self { root, git_dir })
+    }
+
+    pub(crate) fn git_dir(&self) -> &Path {
+        &self.git_dir
+    }
+
+    pub(crate) fn current_thread(&self) -> Result<String> {
+        git_text(
+            &self.root,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+            None,
+            None,
+            false,
+        )
+        .context("review revisions require a named branch")
     }
 
     pub(crate) fn prepare_review(&self, revset: Option<&str>) -> Result<PreparedReview> {
@@ -36,6 +62,47 @@ impl Repository {
             tree_sha,
             diff,
         })
+    }
+
+    pub(crate) fn create_snapshot_commit(
+        &self,
+        tree_sha: &str,
+        base_commit_sha: &str,
+        revision: u64,
+    ) -> Result<String> {
+        let message = format!("trv rev-{revision}\n");
+        git_text(
+            &self.root,
+            &["commit-tree", tree_sha, "-p", base_commit_sha],
+            None,
+            Some(message.as_bytes()),
+            true,
+        )
+        .context("failed to create review snapshot commit")
+    }
+
+    pub(crate) fn create_revision_ref(
+        &self,
+        thread: &str,
+        revision: u64,
+        snapshot_commit_sha: &str,
+    ) -> Result<()> {
+        let reference = format!("refs/trv/{thread}/rev-{revision}");
+        let missing_object = "0".repeat(snapshot_commit_sha.len());
+        git_text(
+            &self.root,
+            &[
+                "update-ref",
+                &reference,
+                snapshot_commit_sha,
+                &missing_object,
+            ],
+            None,
+            None,
+            false,
+        )
+        .map(|_| ())
+        .context("revision ref already exists or could not be created")
     }
 
     fn capture_working_tree(&self) -> Result<(String, String)> {
