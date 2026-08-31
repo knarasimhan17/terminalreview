@@ -22,5 +22,23 @@ belonged to them.
 cargo install --path .
 ```
 
-This initial commit contains the buildable binary scaffold. The review commands
-are added in later commits.
+## Usage
+
+```sh
+trv
+trv -r <revset>
+trv revs
+trv --stdout
+```
+
+`trv` reviews the current working tree against `HEAD`. `trv -r <revset>` reviews
+a commit or revision range instead. Exporting comments creates the next
+immutable revision for the current repository and branch.
+
+`trv revs` lists the stored revisions. `trv --stdout` writes exported comments
+to standard output instead of copying them to the clipboard, which lets an
+agent workflow consume them directly.
+
+Inside a review, use `j`/`k` to move between lines, `]`/`[` to move between
+files, `g`/`G` to jump to the first or last line, `c` to add a comment, `l` to
+view comments, `y` to export, and `q` to quit.

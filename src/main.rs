@@ -1,21 +1,24 @@
 mod cli;
 mod diff;
+mod export;
 mod git;
 mod model;
 mod persistence;
+mod tui;
 
-use std::collections::BTreeSet;
 use std::env;
+use std::io::{self, Write};
 use std::process::ExitCode;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::cli::{Cli, Command};
-use crate::diff::{DiffLineKind, ParsedDiff};
+use crate::diff::ParsedDiff;
+use crate::export::{copy_to_clipboard, format_comments};
 use crate::git::Repository;
-use crate::model::{Comment, Side};
 use crate::persistence::{list_revisions, persist_revision};
+use crate::tui::ReviewOutcome;
 
 fn main() -> ExitCode {
     match run() {
@@ -56,64 +59,24 @@ fn run_review(repository: &Repository, revset: Option<&str>, stdout: bool) -> Re
     let thread = repository.current_thread()?;
     let prepared = repository.prepare_review(revset)?;
     let diff = ParsedDiff::parse(&prepared.diff);
-    let comments = collect_comments(&diff)?;
+
+    let ReviewOutcome::Export(comments) = tui::run(diff)? else {
+        return Ok(());
+    };
+
     let revision = persist_revision(repository, &thread, &prepared, comments)?;
-    let export_target = if stdout { "stdout" } else { "clipboard" };
+    let formatted = format_comments(&revision.comments);
 
-    bail!(
-        "comment export to {export_target} is not implemented after saving rev-{}",
-        revision.rev
-    )
-}
-
-fn collect_comments(diff: &ParsedDiff) -> Result<Vec<Comment>> {
-    bail!(
-        "review UI is not implemented; prepared {}",
-        summarize_diff(diff)
-    )
-}
-
-fn summarize_diff(diff: &ParsedDiff) -> String {
-    let mut additions = 0;
-    let mut deletions = 0;
-    let mut numbered_lines = 0;
-    let mut rendered_bytes = 0;
-    let mut anchor_paths = BTreeSet::new();
-    let mut old_anchors = 0;
-    let mut new_anchors = 0;
-    let mut highest_anchor_line = 0;
-
-    for line in &diff.lines {
-        rendered_bytes += line.text.len();
-        match line.kind {
-            DiffLineKind::Addition => additions += 1,
-            DiffLineKind::Deletion => deletions += 1,
-            DiffLineKind::File
-            | DiffLineKind::Hunk
-            | DiffLineKind::Context
-            | DiffLineKind::Meta => {}
+    if stdout {
+        if !formatted.is_empty() {
+            let mut output = io::stdout().lock();
+            writeln!(output, "{formatted}").context("failed to write exported comments")?;
         }
-        if line.old_line.is_some() || line.new_line.is_some() {
-            numbered_lines += 1;
-        }
-        if let Some(anchor) = line.anchor() {
-            anchor_paths.insert(anchor.path.as_str());
-            highest_anchor_line = highest_anchor_line.max(anchor.line);
-            match anchor.side {
-                Side::Old => old_anchors += 1,
-                Side::New => new_anchors += 1,
-            }
-        }
+        eprintln!("saved rev-{}", revision.rev);
+    } else {
+        let method = copy_to_clipboard(&formatted)?;
+        eprintln!("saved rev-{}; copied comments via {method}", revision.rev);
     }
 
-    format!(
-        "{} files, {} lines, {additions} additions, {deletions} deletions, \
-         {numbered_lines} numbered lines, {} anchors across {} paths \
-         ({old_anchors} old, {new_anchors} new, max line {highest_anchor_line}), \
-         and {rendered_bytes} rendered bytes",
-        diff.file_starts.len(),
-        diff.lines.len(),
-        old_anchors + new_anchors,
-        anchor_paths.len()
-    )
+    Ok(())
 }

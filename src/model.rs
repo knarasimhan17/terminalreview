@@ -9,6 +9,15 @@ pub(crate) enum Side {
     New,
 }
 
+impl Side {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Old => "old",
+            Self::New => "new",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum CommentState {
@@ -22,6 +31,18 @@ pub(crate) struct Comment {
     pub(crate) side: Side,
     pub(crate) body: String,
     pub(crate) state: CommentState,
+}
+
+impl Comment {
+    pub(crate) fn open(path: String, line: u32, side: Side, body: String) -> Self {
+        Self {
+            path,
+            line,
+            side,
+            body,
+            state: CommentState::Open,
+        }
+    }
 }
 
 #[cfg(test)]
