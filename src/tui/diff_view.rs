@@ -5,22 +5,36 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::diff::{DiffLine, DiffLineKind};
+use crate::diff::{DiffFile, DiffLine, DiffLineKind};
 
-use super::App;
+use super::{App, DiffRow};
 
 pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     const HIGHLIGHT_SYMBOL: &str = "> ";
 
-    let block = Block::bordered().title(format!(" trv | diff | {} comments ", app.comments.len()));
+    let block = Block::bordered().title(format!(
+        " trv | files changed | unified | {} comments ",
+        app.comments.len()
+    ));
     let line_width = usize::from(block.inner(area).width)
         .saturating_sub(UnicodeWidthStr::width(HIGHLIGHT_SYMBOL));
-    let items = app
-        .diff
-        .lines
-        .iter()
-        .map(|line| ListItem::new(item_lines(app, line, line_width)))
-        .collect::<Vec<_>>();
+    let rows = app.diff_rows();
+    let items = if rows.is_empty() {
+        vec![ListItem::new("No changes to review.")]
+    } else {
+        rows.iter()
+            .map(|row| match *row {
+                DiffRow::File(file) => {
+                    ListItem::new(file_header(&app.diff.files[file], line_width))
+                }
+                DiffRow::Line { file, line } => ListItem::new(item_lines(
+                    app,
+                    &app.diff.files[file].lines[line],
+                    line_width,
+                )),
+            })
+            .collect::<Vec<_>>()
+    };
     let list = List::new(items)
         .block(block)
         .highlight_symbol(HIGHLIGHT_SYMBOL)
@@ -30,8 +44,34 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         );
     let mut state = ListState::default();
-    state.select(Some(app.selected_diff));
+    if !rows.is_empty() {
+        state.select(Some(app.selected_diff));
+    }
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn file_header(file: &DiffFile, width: usize) -> Line<'static> {
+    let path = format!(" {} ", file.display_path());
+    let kind = format!(" {} ", file.change_kind.as_str());
+    let additions = format!(" +{}", file.additions);
+    let deletions = format!(" -{} ", file.deletions);
+    let used_width = [&path, &kind, &additions, &deletions]
+        .into_iter()
+        .map(|text| UnicodeWidthStr::width(text.as_str()))
+        .sum::<usize>();
+    let padding = " ".repeat(width.saturating_sub(used_width));
+    let background = Style::default().bg(Color::DarkGray);
+
+    Line::from(vec![
+        Span::styled(
+            path,
+            background.fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(kind, background.fg(Color::Cyan)),
+        Span::styled(additions, background.fg(Color::Green)),
+        Span::styled(deletions, background.fg(Color::Red)),
+        Span::styled(padding, background),
+    ])
 }
 
 fn item_lines(app: &App, line: &DiffLine, width: usize) -> Vec<Line<'static>> {
@@ -50,7 +90,7 @@ fn item_lines(app: &App, line: &DiffLine, width: usize) -> Vec<Line<'static>> {
     let gutter = format!("{marker} {old_line:>5} {new_line:>5} ");
     let mut rows = vec![Line::from(vec![
         Span::styled(gutter, Style::default().fg(Color::DarkGray)),
-        Span::styled(line.text.clone(), line_style(line.kind)),
+        Span::styled(display_text(line), line_style(line.kind)),
     ])];
 
     if app.inline_comments {
@@ -68,6 +108,17 @@ fn item_lines(app: &App, line: &DiffLine, width: usize) -> Vec<Line<'static>> {
     }
 
     rows
+}
+
+fn display_text(line: &DiffLine) -> String {
+    match line.kind {
+        DiffLineKind::Hunk if line.text.is_empty() => "──".to_owned(),
+        DiffLineKind::Hunk => format!("── {}", line.text),
+        DiffLineKind::Addition => format!("+{}", line.text),
+        DiffLineKind::Deletion => format!("-{}", line.text),
+        DiffLineKind::Context => format!(" {}", line.text),
+        DiffLineKind::Meta => line.text.clone(),
+    }
 }
 
 fn wrap_comment_body(body: &str, width: usize) -> Vec<String> {
@@ -117,10 +168,9 @@ fn byte_index_at_width(text: &str, width: usize) -> usize {
 
 fn line_style(kind: DiffLineKind) -> Style {
     match kind {
-        DiffLineKind::File => Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-        DiffLineKind::Hunk => Style::default().fg(Color::Cyan),
+        DiffLineKind::Hunk => Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
         DiffLineKind::Addition => Style::default().fg(Color::Green),
         DiffLineKind::Deletion => Style::default().fg(Color::Red),
         DiffLineKind::Context => Style::default(),
@@ -151,13 +201,12 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[test]
     fn inline_comments_follow_their_diff_line_and_wrap() {
         let mut app = App::new(ParsedDiff::parse(DIFF));
-        let selected = app
-            .diff
+        let selected = app.diff.files[0]
             .lines
             .iter()
             .position(|line| line.kind == DiffLineKind::Addition)
             .expect("the fixture must contain an added line");
-        app.selected_diff = selected;
+        app.selected_diff = selected + 1;
         app.start_comment();
         let Mode::CommentInput { body, .. } = &mut app.mode else {
             panic!("commenting on an added line must open the input");
@@ -165,7 +214,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         body.push_str("first exceptionallylong\n\nnext");
         app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        let visible = item_lines(&app, &app.diff.lines[selected], NARROW_WIDTH)
+        let visible = item_lines(&app, &app.diff.files[0].lines[selected], NARROW_WIDTH)
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>();
@@ -188,7 +237,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         );
 
         app.inline_comments = false;
-        let hidden = item_lines(&app, &app.diff.lines[selected], NARROW_WIDTH)
+        let hidden = item_lines(&app, &app.diff.files[0].lines[selected], NARROW_WIDTH)
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>();

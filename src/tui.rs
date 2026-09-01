@@ -52,6 +52,12 @@ struct App {
     status: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffRow {
+    File(usize),
+    Line { file: usize, line: usize },
+}
+
 impl App {
     fn new(diff: ParsedDiff) -> Self {
         Self {
@@ -90,7 +96,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_diff_up(),
             KeyCode::Char('g') | KeyCode::Home => self.select_diff(0),
             KeyCode::Char('G') | KeyCode::End => {
-                self.select_diff(self.diff.lines.len().saturating_sub(1));
+                self.select_diff(self.diff_rows().len().saturating_sub(1));
             }
             KeyCode::Char(']') => self.next_file(),
             KeyCode::Char('[') => self.previous_file(),
@@ -197,7 +203,7 @@ impl App {
     }
 
     fn move_diff_down(&mut self) {
-        if self.selected_diff + 1 < self.diff.lines.len() {
+        if self.selected_diff + 1 < self.diff_rows().len() {
             self.select_diff(self.selected_diff + 1);
         }
     }
@@ -207,17 +213,18 @@ impl App {
     }
 
     fn select_diff(&mut self, index: usize) {
-        self.selected_diff = index.min(self.diff.lines.len().saturating_sub(1));
+        self.selected_diff = index.min(self.diff_rows().len().saturating_sub(1));
         self.status = None;
     }
 
     fn next_file(&mut self) {
         if let Some(index) = self
-            .diff
-            .file_starts
+            .diff_rows()
             .iter()
-            .copied()
-            .find(|index| *index > self.selected_diff)
+            .enumerate()
+            .find_map(|(index, row)| {
+                (index > self.selected_diff && matches!(row, DiffRow::File(_))).then_some(index)
+            })
         {
             self.select_diff(index);
         }
@@ -225,19 +232,20 @@ impl App {
 
     fn previous_file(&mut self) {
         if let Some(index) = self
-            .diff
-            .file_starts
+            .diff_rows()
             .iter()
-            .copied()
+            .enumerate()
             .rev()
-            .find(|index| *index < self.selected_diff)
+            .find_map(|(index, row)| {
+                (index < self.selected_diff && matches!(row, DiffRow::File(_))).then_some(index)
+            })
         {
             self.select_diff(index);
         }
     }
 
     fn start_comment(&mut self) {
-        let Some(anchor) = self.diff.lines[self.selected_diff].anchor().cloned() else {
+        let Some(anchor) = self.selected_anchor().cloned() else {
             self.status = Some("Select a changed or context line to comment.".to_owned());
             return;
         };
@@ -269,7 +277,26 @@ impl App {
     }
 
     fn selected_anchor(&self) -> Option<&LineAnchor> {
-        self.diff.lines[self.selected_diff].anchor()
+        let DiffRow::Line { file, line } = self.selected_row()? else {
+            return None;
+        };
+        self.diff.files[file].lines[line].anchor()
+    }
+
+    fn selected_row(&self) -> Option<DiffRow> {
+        self.diff_rows().get(self.selected_diff).copied()
+    }
+
+    fn diff_rows(&self) -> Vec<DiffRow> {
+        let mut rows = Vec::new();
+        for (file_index, file) in self.diff.files.iter().enumerate() {
+            rows.push(DiffRow::File(file_index));
+            rows.extend((0..file.lines.len()).map(|line| DiffRow::Line {
+                file: file_index,
+                line,
+            }));
+        }
+        rows
     }
 
     fn comments_for_line<'a>(
@@ -484,7 +511,16 @@ mod tests {
 
     #[test]
     fn inline_comment_toggle_preserves_the_selected_diff_line() {
-        let mut app = App::new(ParsedDiff::parse("first\nsecond"));
+        let mut app = App::new(ParsedDiff::parse(
+            "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-first
++second
+",
+        ));
         app.selected_diff = 1;
         let selected = app.selected_diff;
 

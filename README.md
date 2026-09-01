@@ -59,6 +59,9 @@ agent workflow consume them directly.
 In the picker, use `j`/`k` to move, `Enter` to select, and `q` or `Esc` to go
 back.
 
+The review groups changes into file sections. Each file header shows its change
+kind and added/deleted line counts; raw Git patch metadata is omitted.
+
 Inside a review, use `j`/`k` to move between lines, `]`/`[` to move between
 files, `g`/`G` to jump to the first or last line, `c` to add a comment, `l` to
 view comments, `v` to show or hide inline comment rows, `y` to export, and `q`
