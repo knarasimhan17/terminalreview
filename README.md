@@ -36,18 +36,28 @@ cargo install --path .
 
 ```sh
 trv
+trv -w
 trv -r <revset>
 trv revs
 trv --stdout
 ```
 
-`trv` reviews the current working tree against `HEAD`. `trv -r <revset>` reviews
-a commit or revision range instead. Exporting comments creates the next
-immutable revision for the current repository and branch.
+`trv` opens a picker with the working tree preselected, followed by the latest
+200 commits on the current branch. Commits not found on any remote-tracking ref
+are marked as unpushed. Selecting a commit opens a second picker for its base,
+preselected to the commit's first parent.
+
+`trv -w` (or `trv --working-tree`) reviews the current working tree against
+`HEAD` directly. `trv -r <revset>` reviews a commit or revision range directly.
+Both flags skip the picker. Exporting comments creates the next immutable
+revision for the current repository and branch.
 
 `trv revs` lists the stored revisions. `trv --stdout` writes exported comments
 to standard output instead of copying them to the clipboard, which lets an
 agent workflow consume them directly.
+
+In the picker, use `j`/`k` to move, `Enter` to select, and `q` or `Esc` to go
+back.
 
 Inside a review, use `j`/`k` to move between lines, `]`/`[` to move between
 files, `g`/`G` to jump to the first or last line, `c` to add a comment, `l` to

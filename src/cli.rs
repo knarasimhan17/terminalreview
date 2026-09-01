@@ -11,6 +11,9 @@ pub(crate) struct Cli {
     #[arg(short = 'r', long, value_name = "REVSET")]
     pub(crate) revset: Option<String>,
 
+    #[arg(short = 'w', long, conflicts_with = "revset")]
+    pub(crate) working_tree: bool,
+
     #[arg(long)]
     pub(crate) stdout: bool,
 

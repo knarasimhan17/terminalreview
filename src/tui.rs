@@ -1,3 +1,5 @@
+mod picker;
+
 use std::io;
 
 use anyhow::{Context, Result};
@@ -5,7 +7,7 @@ use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
@@ -17,6 +19,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::diff::{DiffLine, DiffLineKind, LineAnchor, ParsedDiff};
 use crate::model::Comment;
+
+pub(crate) use picker::{CommitPickerOutcome, ReviewTarget, run as run_picker};
 
 type TrvTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -288,10 +292,10 @@ fn run_review(terminal: &mut TrvTerminal, diff: ParsedDiff) -> Result<ReviewOutc
         terminal
             .draw(|frame| render(frame, &app))
             .context("failed to draw review")?;
-        if let Event::Key(key) = event::read().context("failed to read terminal input")? {
-            if let Some(outcome) = app.handle_key(key) {
-                return Ok(outcome);
-            }
+        if let Event::Key(key) = event::read().context("failed to read terminal input")?
+            && let Some(outcome) = app.handle_key(key)
+        {
+            return Ok(outcome);
         }
     }
 }
@@ -329,10 +333,10 @@ impl Drop for TerminalMode {
         if let Err(error) = screen_result {
             eprintln!("trv: failed to restore terminal screen: {error}");
         }
-        if self.raw {
-            if let Err(error) = disable_raw_mode() {
-                eprintln!("trv: failed to disable terminal raw mode: {error}");
-            }
+        if self.raw
+            && let Err(error) = disable_raw_mode()
+        {
+            eprintln!("trv: failed to disable terminal raw mode: {error}");
         }
     }
 }

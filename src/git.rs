@@ -1,13 +1,29 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::str;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
+
+// The picker targets recent work, and this caps both Git output and TUI memory.
+const RECENT_COMMIT_LIMIT: usize = 200;
 
 pub(crate) struct Repository {
     root: PathBuf,
     git_dir: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CommitLogEntry {
+    pub(crate) sha: String,
+    pub(crate) short_sha: String,
+    pub(crate) first_parent_sha: Option<String>,
+    pub(crate) subject: String,
+    pub(crate) committed_at: DateTime<Utc>,
+    pub(crate) unpushed: bool,
 }
 
 pub(crate) struct PreparedReview {
@@ -48,6 +64,40 @@ impl Repository {
             false,
         )
         .context("review revisions require a named branch")
+    }
+
+    pub(crate) fn recent_commits(&self) -> Result<Vec<CommitLogEntry>> {
+        let limit = format!("--max-count={RECENT_COMMIT_LIMIT}");
+        let output = git_bytes(
+            &self.root,
+            &[
+                "log",
+                "-z",
+                &limit,
+                "--format=%H%x00%h%x00%P%x00%ct%x00%s",
+                "HEAD",
+            ],
+            None,
+            None,
+            false,
+        )
+        .context("failed to read recent commit log")?;
+        let mut commits = parse_commit_log(&output)?;
+
+        let output = git_text(
+            &self.root,
+            &["rev-list", &limit, "HEAD", "--not", "--remotes"],
+            None,
+            None,
+            false,
+        )
+        .context("failed to detect commits absent from remote-tracking refs")?;
+        let unpushed = output.lines().collect::<HashSet<_>>();
+        for commit in &mut commits {
+            commit.unpushed = unpushed.contains(commit.sha.as_str());
+        }
+
+        Ok(commits)
     }
 
     pub(crate) fn prepare_review(&self, revset: Option<&str>) -> Result<PreparedReview> {
@@ -216,6 +266,47 @@ impl Repository {
     }
 }
 
+fn parse_commit_log(output: &[u8]) -> Result<Vec<CommitLogEntry>> {
+    let output = output.strip_suffix(b"\0").unwrap_or(output);
+    if output.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let fields = output.split(|byte| *byte == b'\0').collect::<Vec<_>>();
+    let mut records = fields.chunks_exact(5);
+    let mut commits = Vec::with_capacity(records.len());
+    for record in &mut records {
+        let parents = metadata_field(record[2], "commit parents")?;
+        let timestamp = metadata_field(record[3], "commit timestamp")?
+            .parse::<i64>()
+            .context("Git returned an invalid commit timestamp")?;
+        let committed_at = DateTime::<Utc>::from_timestamp(timestamp, 0).with_context(|| {
+            format!("Git returned an out-of-range commit timestamp: {timestamp}")
+        })?;
+
+        commits.push(CommitLogEntry {
+            sha: metadata_field(record[0], "commit SHA")?.to_owned(),
+            short_sha: metadata_field(record[1], "short commit SHA")?.to_owned(),
+            first_parent_sha: parents.split_ascii_whitespace().next().map(str::to_owned),
+            subject: metadata_field(record[4], "commit subject")?.to_owned(),
+            committed_at,
+            unpushed: false,
+        });
+    }
+    if !records.remainder().is_empty() {
+        bail!(
+            "Git commit log returned {} fields; expected groups of five",
+            fields.len()
+        );
+    }
+
+    Ok(commits)
+}
+
+fn metadata_field<'a>(field: &'a [u8], label: &str) -> Result<&'a str> {
+    str::from_utf8(field).with_context(|| format!("Git returned non-UTF-8 {label}"))
+}
+
 fn default_head(revision: &str) -> &str {
     if revision.is_empty() {
         "HEAD"
@@ -289,4 +380,94 @@ fn git_bytes(
         output.status,
         stderr.trim()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+
+    use super::{CommitLogEntry, Repository, git_text, parse_commit_log};
+
+    #[test]
+    fn commit_log_records_preserve_picker_metadata() {
+        let output = b"1111111111111111111111111111111111111111\0\
+1111111\0\
+2222222222222222222222222222222222222222 3333333333333333333333333333333333333333\0\
+1700000000\0\
+feat: add picker\0\
+2222222222222222222222222222222222222222\0\
+2222222\0\
+\0\
+1690000000\0\
+docs: initial commit\0";
+
+        let commits =
+            parse_commit_log(output).expect("well-formed Git log records must be parseable");
+
+        assert_eq!(
+            commits,
+            vec![
+                CommitLogEntry {
+                    sha: "1111111111111111111111111111111111111111".to_owned(),
+                    short_sha: "1111111".to_owned(),
+                    first_parent_sha: Some("2222222222222222222222222222222222222222".to_owned()),
+                    subject: "feat: add picker".to_owned(),
+                    committed_at: DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
+                        .expect("the fixture timestamp must be representable"),
+                    unpushed: false,
+                },
+                CommitLogEntry {
+                    sha: "2222222222222222222222222222222222222222".to_owned(),
+                    short_sha: "2222222".to_owned(),
+                    first_parent_sha: None,
+                    subject: "docs: initial commit".to_owned(),
+                    committed_at: DateTime::<Utc>::from_timestamp(1_690_000_000, 0)
+                        .expect("the fixture timestamp must be representable"),
+                    unpushed: false,
+                },
+            ],
+            "log parsing must preserve every field used by the picker"
+        );
+    }
+
+    #[test]
+    fn recent_commits_mark_only_history_absent_from_remote_tracking_refs() {
+        let directory =
+            tempfile::tempdir().expect("temporary repository creation must succeed for this test");
+        run_git(directory.path(), &["init", "--quiet"]);
+        run_git(
+            directory.path(),
+            &["commit", "--allow-empty", "--quiet", "-m", "pushed"],
+        );
+        let pushed = run_git(directory.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            directory.path(),
+            &["update-ref", "refs/remotes/origin/main", &pushed],
+        );
+        run_git(
+            directory.path(),
+            &["commit", "--allow-empty", "--quiet", "-m", "local"],
+        );
+
+        let repository = Repository::discover(directory.path())
+            .expect("the synthetic repository must be discoverable");
+        let commits = repository
+            .recent_commits()
+            .expect("recent commits must be readable from the synthetic repository");
+        let status = commits
+            .iter()
+            .map(|commit| (commit.subject.as_str(), commit.unpushed))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            status,
+            vec![("local", true), ("pushed", false)],
+            "only commits unreachable from remote-tracking refs must be marked unpushed"
+        );
+    }
+
+    fn run_git(directory: &std::path::Path, args: &[&str]) -> String {
+        git_text(directory, args, None, None, true)
+            .expect("synthetic repository Git commands must succeed")
+    }
 }
