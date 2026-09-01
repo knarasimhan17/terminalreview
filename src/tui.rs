@@ -1,3 +1,4 @@
+mod diff_view;
 mod picker;
 
 use std::io;
@@ -12,12 +13,11 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 use unicode_width::UnicodeWidthStr;
 
-use crate::diff::{DiffLine, DiffLineKind, LineAnchor, ParsedDiff};
+use crate::diff::{DiffLine, LineAnchor, ParsedDiff};
 use crate::model::Comment;
 
 pub(crate) use picker::{CommitPickerOutcome, ReviewTarget, run as run_picker};
@@ -47,6 +47,7 @@ struct App {
     comments: Vec<Comment>,
     selected_diff: usize,
     selected_comment: usize,
+    inline_comments: bool,
     mode: Mode,
     status: Option<String>,
 }
@@ -58,6 +59,7 @@ impl App {
             comments: Vec::new(),
             selected_diff: 0,
             selected_comment: 0,
+            inline_comments: true,
             mode: Mode::Diff,
             status: None,
         }
@@ -93,6 +95,15 @@ impl App {
             KeyCode::Char(']') => self.next_file(),
             KeyCode::Char('[') => self.previous_file(),
             KeyCode::Char('c') => self.start_comment(),
+            KeyCode::Char('v') => {
+                self.inline_comments = !self.inline_comments;
+                let state = if self.inline_comments {
+                    "shown"
+                } else {
+                    "hidden"
+                };
+                self.status = Some(format!("Inline comments {state}."));
+            }
             KeyCode::Char('l') | KeyCode::Tab => self.mode = Mode::Comments,
             KeyCode::Char('y') => {
                 return Some(ReviewOutcome::Export(self.comments.clone()));
@@ -261,14 +272,17 @@ impl App {
         self.diff.lines[self.selected_diff].anchor()
     }
 
-    fn line_has_comment(&self, line: &DiffLine) -> bool {
-        let Some(anchor) = line.anchor() else {
-            return false;
-        };
-        self.comments.iter().any(|comment| {
-            comment.path == anchor.path
-                && comment.line == anchor.line
-                && comment.side == anchor.side
+    fn comments_for_line<'a>(
+        &'a self,
+        line: &'a DiffLine,
+    ) -> impl Iterator<Item = &'a Comment> + 'a {
+        let anchor = line.anchor();
+        self.comments.iter().filter(move |comment| {
+            anchor.is_some_and(|anchor| {
+                comment.path == anchor.path
+                    && comment.line == anchor.line
+                    && comment.side == anchor.side
+            })
         })
     }
 }
@@ -346,7 +360,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
 
     match app.visible_view() {
-        View::Diff => render_diff(frame, content, app),
+        View::Diff => diff_view::render(frame, content, app),
         View::Comments => render_comments(frame, content, app),
     }
     render_footer(frame, footer, app);
@@ -356,41 +370,6 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         Mode::QuitConfirm { .. } => render_quit_confirm(frame, app.comments.len()),
         Mode::Diff | Mode::Comments => {}
     }
-}
-
-fn render_diff(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let items = app
-        .diff
-        .lines
-        .iter()
-        .map(|line| {
-            let marker = if app.line_has_comment(line) { "*" } else { " " };
-            let old_line = line
-                .old_line
-                .map(|line| line.to_string())
-                .unwrap_or_default();
-            let new_line = line
-                .new_line
-                .map(|line| line.to_string())
-                .unwrap_or_default();
-            let gutter = format!("{marker} {old_line:>5} {new_line:>5} ");
-            ListItem::new(Line::from(vec![
-                Span::styled(gutter, Style::default().fg(Color::DarkGray)),
-                Span::styled(line.text.clone(), line_style(line.kind)),
-            ]))
-        })
-        .collect::<Vec<_>>();
-    let list = List::new(items)
-        .block(Block::bordered().title(format!(" trv | diff | {} comments ", app.comments.len())))
-        .highlight_symbol("> ")
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        );
-    let mut state = ListState::default();
-    state.select(Some(app.selected_diff));
-    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_comments(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -426,15 +405,24 @@ fn render_comments(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let text = app.status.clone().unwrap_or_else(|| {
+    frame.render_widget(
+        Paragraph::new(footer_text(app)).style(Style::default().fg(Color::DarkGray)),
+        area,
+    );
+}
+
+fn footer_text(app: &App) -> String {
+    let detail = app.status.clone().unwrap_or_else(|| {
         app.selected_anchor()
             .map(|anchor| format!("{}:{} [{}]", anchor.path, anchor.line, anchor.side.as_str()))
             .unwrap_or_default()
     });
-    frame.render_widget(
-        Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
-        area,
-    );
+    let inline_state = if app.inline_comments { "on" } else { "off" };
+    if detail.is_empty() {
+        format!("v inline comments: {inline_state}")
+    } else {
+        format!("v inline comments: {inline_state} | {detail}")
+    }
 }
 
 fn render_comment_input(frame: &mut Frame<'_>, body: &str) {
@@ -490,15 +478,28 @@ fn centered(outer: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
-fn line_style(kind: DiffLineKind) -> Style {
-    match kind {
-        DiffLineKind::File => Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-        DiffLineKind::Hunk => Style::default().fg(Color::Cyan),
-        DiffLineKind::Addition => Style::default().fg(Color::Green),
-        DiffLineKind::Deletion => Style::default().fg(Color::Red),
-        DiffLineKind::Context => Style::default(),
-        DiffLineKind::Meta => Style::default().fg(Color::DarkGray),
+#[cfg(test)]
+mod tests {
+    use super::{App, KeyCode, KeyEvent, KeyModifiers, ParsedDiff, footer_text};
+
+    #[test]
+    fn inline_comment_toggle_preserves_the_selected_diff_line() {
+        let mut app = App::new(ParsedDiff::parse("first\nsecond"));
+        app.selected_diff = 1;
+        let selected = app.selected_diff;
+
+        assert!(app.inline_comments, "inline comments must start visible");
+        assert!(
+            footer_text(&app).contains("v inline comments: on"),
+            "the footer must document the toggle and its state"
+        );
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+
+        assert!(!app.inline_comments, "v must hide inline comment bodies");
+        assert_eq!(
+            app.selected_diff, selected,
+            "toggling inline comments must preserve the selected diff line"
+        );
     }
 }
