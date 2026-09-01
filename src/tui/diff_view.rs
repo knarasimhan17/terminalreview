@@ -24,9 +24,11 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         rows.iter()
             .map(|row| match *row {
-                DiffRow::File(file) => {
-                    ListItem::new(file_header(&app.diff.files[file], line_width))
-                }
+                DiffRow::File(file) => ListItem::new(file_header(
+                    &app.diff.files[file],
+                    line_width,
+                    app.collapsed_files[file],
+                )),
                 DiffRow::Line { file, line } => ListItem::new(item_lines(
                     app,
                     &app.diff.files[file].lines[line],
@@ -50,8 +52,9 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn file_header(file: &DiffFile, width: usize) -> Line<'static> {
-    let path = format!(" {} ", file.display_path());
+fn file_header(file: &DiffFile, width: usize, collapsed: bool) -> Line<'static> {
+    let marker = if collapsed { "▸" } else { "▾" };
+    let path = format!(" {marker} {} ", file.display_path());
     let kind = format!(" {} ", file.change_kind.as_str());
     let additions = format!(" +{}", file.additions);
     let deletions = format!(" -{} ", file.deletions);

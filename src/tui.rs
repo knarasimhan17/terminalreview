@@ -44,6 +44,7 @@ enum Mode {
 
 struct App {
     diff: ParsedDiff,
+    collapsed_files: Vec<bool>,
     comments: Vec<Comment>,
     selected_diff: usize,
     selected_comment: usize,
@@ -60,8 +61,10 @@ enum DiffRow {
 
 impl App {
     fn new(diff: ParsedDiff) -> Self {
+        let collapsed_files = vec![false; diff.files.len()];
         Self {
             diff,
+            collapsed_files,
             comments: Vec::new(),
             selected_diff: 0,
             selected_comment: 0,
@@ -100,6 +103,13 @@ impl App {
             }
             KeyCode::Char(']') => self.next_file(),
             KeyCode::Char('[') => self.previous_file(),
+            KeyCode::Enter => {
+                self.toggle_selected_file();
+            }
+            KeyCode::Tab if matches!(self.selected_row(), Some(DiffRow::File(_))) => {
+                self.toggle_selected_file();
+            }
+            KeyCode::Tab => self.mode = Mode::Comments,
             KeyCode::Char('c') => self.start_comment(),
             KeyCode::Char('v') => {
                 self.inline_comments = !self.inline_comments;
@@ -110,7 +120,7 @@ impl App {
                 };
                 self.status = Some(format!("Inline comments {state}."));
             }
-            KeyCode::Char('l') | KeyCode::Tab => self.mode = Mode::Comments,
+            KeyCode::Char('l') => self.mode = Mode::Comments,
             KeyCode::Char('y') => {
                 return Some(ReviewOutcome::Export(self.comments.clone()));
             }
@@ -256,6 +266,20 @@ impl App {
         self.status = None;
     }
 
+    fn toggle_selected_file(&mut self) -> bool {
+        let Some(DiffRow::File(file)) = self.selected_row() else {
+            return false;
+        };
+        self.collapsed_files[file] = !self.collapsed_files[file];
+        let state = if self.collapsed_files[file] {
+            "collapsed"
+        } else {
+            "expanded"
+        };
+        self.status = Some(format!("{} {state}.", self.diff.files[file].display_path()));
+        true
+    }
+
     fn request_quit(&mut self) -> Option<ReviewOutcome> {
         if self.comments.is_empty() {
             return Some(ReviewOutcome::Quit);
@@ -291,10 +315,12 @@ impl App {
         let mut rows = Vec::new();
         for (file_index, file) in self.diff.files.iter().enumerate() {
             rows.push(DiffRow::File(file_index));
-            rows.extend((0..file.lines.len()).map(|line| DiffRow::Line {
-                file: file_index,
-                line,
-            }));
+            if !self.collapsed_files[file_index] {
+                rows.extend((0..file.lines.len()).map(|line| DiffRow::Line {
+                    file: file_index,
+                    line,
+                }));
+            }
         }
         rows
     }
@@ -507,7 +533,22 @@ fn centered(outer: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, KeyCode, KeyEvent, KeyModifiers, ParsedDiff, footer_text};
+    use super::{App, DiffRow, KeyCode, KeyEvent, KeyModifiers, Mode, ParsedDiff, footer_text};
+
+    const TWO_FILE_DIFF: &str = "\
+diff --git first.rs first.rs
+--- first.rs
++++ first.rs
+@@ -1 +1 @@
+-old
++new
+diff --git second.rs second.rs
+--- second.rs
++++ second.rs
+@@ -1 +1 @@
+-before
++after
+";
 
     #[test]
     fn inline_comment_toggle_preserves_the_selected_diff_line() {
@@ -536,6 +577,48 @@ diff --git file.rs file.rs
         assert_eq!(
             app.selected_diff, selected,
             "toggling inline comments must preserve the selected diff line"
+        );
+    }
+
+    #[test]
+    fn file_headers_toggle_bodies_and_remain_navigation_targets() {
+        let mut app = App::new(ParsedDiff::parse(TWO_FILE_DIFF));
+        let expanded_rows = app.diff_rows();
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(
+            app.diff_rows(),
+            [
+                DiffRow::File(0),
+                DiffRow::File(1),
+                DiffRow::Line { file: 1, line: 0 },
+                DiffRow::Line { file: 1, line: 1 },
+                DiffRow::Line { file: 1, line: 2 },
+            ],
+            "collapsing a header must hide only that file's body"
+        );
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(
+            app.selected_row(),
+            Some(DiffRow::File(1)),
+            "next-file navigation must still target collapsed section headers"
+        );
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+        app.handle_diff_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(
+            app.diff_rows(),
+            expanded_rows,
+            "Tab on a header must expand the selected file without changing views"
+        );
+
+        app.select_diff(1);
+        app.handle_diff_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(
+            matches!(app.mode, Mode::Comments),
+            "Tab on a code row must retain the existing comments-view shortcut"
         );
     }
 }

@@ -60,7 +60,9 @@ In the picker, use `j`/`k` to move, `Enter` to select, and `q` or `Esc` to go
 back.
 
 The review groups changes into file sections. Each file header shows its change
-kind and added/deleted line counts; raw Git patch metadata is omitted.
+kind and added/deleted line counts; raw Git patch metadata is omitted. Files
+start expanded. With a file header selected, use `Enter` or `Tab` to collapse or
+expand it.
 
 Inside a review, use `j`/`k` to move between lines, `]`/`[` to move between
 files, `g`/`G` to jump to the first or last line, `c` to add a comment, `l` to
