@@ -18,6 +18,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::diff::{DiffLine, DiffLineKind, LineAnchor, ParsedDiff};
 use crate::model::Comment;
 
+type TrvTerminal = Terminal<CrosstermBackend<io::Stdout>>;
+
 pub(crate) enum ReviewOutcome {
     Export(Vec<Comment>),
     Quit,
@@ -268,10 +270,18 @@ impl App {
 }
 
 pub(crate) fn run(diff: ParsedDiff) -> Result<ReviewOutcome> {
+    with_terminal(|terminal| run_review(terminal, diff))
+}
+
+fn with_terminal<T>(operation: impl FnOnce(&mut TrvTerminal) -> Result<T>) -> Result<T> {
     let _terminal_mode = TerminalMode::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("failed to initialize terminal")?;
     terminal.clear().context("failed to clear terminal")?;
+    operation(&mut terminal)
+}
+
+fn run_review(terminal: &mut TrvTerminal, diff: ParsedDiff) -> Result<ReviewOutcome> {
     let mut app = App::new(diff);
 
     loop {
