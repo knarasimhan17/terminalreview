@@ -61,4 +61,6 @@ back.
 
 Inside a review, use `j`/`k` to move between lines, `]`/`[` to move between
 files, `g`/`G` to jump to the first or last line, `c` to add a comment, `l` to
-view comments, `y` to export, and `q` to quit.
+view comments, `v` to show or hide inline comment rows, `y` to export, and `q`
+to quit. Inline comments are shown by default; commented lines keep a `●`
+gutter marker when inline rows are hidden.
