@@ -43,6 +43,9 @@ impl App {
                 column,
             ));
         }
+        if let Some(comment) = super::diff_view::comment_index_at(self, column, row) {
+            self.edit_comment(comment);
+        }
     }
 
     pub(super) fn select_side(&mut self, side: Side) {
@@ -97,8 +100,74 @@ impl App {
         self.mode = Mode::CommentInput {
             anchor,
             body: String::new(),
+            existing: None,
         };
         self.status = None;
+    }
+
+    pub(super) fn edit_comment(&mut self, index: usize) {
+        let Some(comment) = self.comments.get(index) else {
+            return;
+        };
+        self.mode = Mode::CommentInput {
+            anchor: crate::diff::LineAnchor {
+                path: comment.path.clone(),
+                line: comment.line,
+                side: comment.side,
+            },
+            body: comment.body.clone(),
+            existing: Some(index),
+        };
+        self.selected_comment = index;
+        self.status = Some("Enter save | Esc cancel | Ctrl-D delete".to_owned());
+    }
+
+    pub(super) fn edit_selected_comment(&mut self) {
+        if self.comments.is_empty() {
+            self.status = Some("No comments to edit.".to_owned());
+            return;
+        }
+        self.edit_comment(self.selected_comment);
+    }
+
+    pub(super) fn delete_comment(&mut self, index: usize) {
+        if index >= self.comments.len() {
+            return;
+        }
+        self.comments.remove(index);
+        if self.selected_comment >= self.comments.len() {
+            self.selected_comment = self.comments.len().saturating_sub(1);
+        }
+        self.status = Some("Comment deleted.".to_owned());
+    }
+
+    pub(super) fn delete_open_comment(&mut self) {
+        let existing = match &self.mode {
+            Mode::CommentInput { existing, .. } => *existing,
+            _ => return,
+        };
+        if let Some(index) = existing {
+            self.delete_comment(index);
+        } else {
+            self.status = Some("Comment canceled.".to_owned());
+        }
+        self.mode = Mode::Diff;
+    }
+
+    pub(super) fn delete_selected_line_comment(&mut self) {
+        let Some(anchor) = self.selected_anchor().cloned() else {
+            self.status = Some("Select a line with a comment to delete.".to_owned());
+            return;
+        };
+        let Some(index) = self.comments.iter().rposition(|comment| {
+            comment.path == anchor.path
+                && comment.line == anchor.line
+                && comment.side == anchor.side
+        }) else {
+            self.status = Some("No comment on this line.".to_owned());
+            return;
+        };
+        self.delete_comment(index);
     }
 
     pub(super) fn toggle_selected_file(&mut self) -> bool {
@@ -307,6 +376,28 @@ impl App {
         })
     }
 
+    pub(super) fn comment_indices_for_line<'a>(
+        &'a self,
+        line: &'a DiffLine,
+    ) -> impl Iterator<Item = usize> + 'a {
+        let old_anchor = line.anchor_on(Side::Old);
+        let new_anchor = line.anchor_on(Side::New);
+        self.comments
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, comment)| {
+                [old_anchor, new_anchor]
+                    .into_iter()
+                    .flatten()
+                    .any(|anchor| {
+                        comment.path == anchor.path
+                            && comment.line == anchor.line
+                            && comment.side == anchor.side
+                    })
+                    .then_some(index)
+            })
+    }
+
     pub(super) fn comments_for_anchor<'a>(
         &'a self,
         anchor: Option<&'a LineAnchor>,
@@ -318,5 +409,23 @@ impl App {
                     && comment.side == anchor.side
             })
         })
+    }
+
+    pub(super) fn comment_indices_for_anchor<'a>(
+        &'a self,
+        anchor: Option<&'a LineAnchor>,
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.comments
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, comment)| {
+                anchor
+                    .is_some_and(|anchor| {
+                        comment.path == anchor.path
+                            && comment.line == anchor.line
+                            && comment.side == anchor.side
+                    })
+                    .then_some(index)
+            })
     }
 }

@@ -67,9 +67,12 @@ expand it.
 Inside a review, use `j`/`k` or the up/down arrows to move between lines, or
 click a line with the mouse. The scroll wheel also moves the selection. Use
 `]`/`[` to move between files, `g`/`G` to jump to the first or last line, `c`
-to add a comment, `l` to view comments, `s` to toggle unified or side-by-side
-layout, `v` to show or hide inline comment rows, `y` to export, `?` to show
-context-aware help, and `q` to quit. Press `?`, `Esc`, or `q` to close help and
+to add a comment, click an existing comment to edit it, `d` to delete the
+comment on the selected line, `l` to view comments, `s` to toggle unified or
+side-by-side layout, `v` to show or hide inline comment rows, `y` to export,
+`?` to show context-aware help, and `q` to quit. While editing, `Enter` saves,
+`Esc` cancels, and `Ctrl-D` or an empty `Enter` deletes the comment. In the
+comment list, `c`/`Enter` edits and `d` deletes. Press `?`, `Esc`, or `q` to close help and
 return to the same screen. Unified layout is the default. In side-by-side
 layout, use the left/right arrow keys or click a column to choose the old or
 new side before adding a comment. Inline comments work
