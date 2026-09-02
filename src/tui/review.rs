@@ -27,6 +27,24 @@ impl App {
         self.status = None;
     }
 
+    pub(super) fn select_at_pointer(&mut self, column: u16, row: u16) {
+        let Some(index) = super::diff_view::item_index_at(
+            self.diff_list.inner,
+            &self.diff_list.heights,
+            self.diff_list.offset,
+            row,
+        ) else {
+            return;
+        };
+        self.select_diff(index);
+        if self.diff_layout == DiffLayout::SideBySide {
+            self.select_side(super::diff_view::side_at_column(
+                self.diff_list.inner,
+                column,
+            ));
+        }
+    }
+
     pub(super) fn select_side(&mut self, side: Side) {
         if self.diff_layout != DiffLayout::SideBySide {
             return;

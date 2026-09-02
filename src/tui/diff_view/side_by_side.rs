@@ -1,3 +1,4 @@
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -169,6 +170,18 @@ fn column_widths(width: usize) -> (usize, usize, bool) {
     (left, content_width - left, divider)
 }
 
+pub(super) fn side_at_column(list_area: Rect, column: u16) -> Side {
+    let highlight = UnicodeWidthStr::width(super::HIGHLIGHT_SYMBOL) as u16;
+    let content_x = list_area.x.saturating_add(highlight);
+    let content_width = list_area.width.saturating_sub(highlight);
+    let (left, _, _) = column_widths(usize::from(content_width));
+    if column < content_x.saturating_add(left as u16) {
+        Side::Old
+    } else {
+        Side::New
+    }
+}
+
 fn fit_width(text: &str, width: usize) -> String {
     let mut end = 0;
     let mut used = 0;
@@ -194,7 +207,8 @@ mod tests {
     use crate::model::{Comment, Side};
 
     use super::super::super::App;
-    use super::item_lines;
+    use super::{item_lines, side_at_column};
+    use ratatui::layout::Rect;
 
     const DIFF: &str = "\
 diff --git file.rs file.rs
@@ -204,6 +218,21 @@ diff --git file.rs file.rs
 -old
 +new
 ";
+
+    #[test]
+    fn side_at_column_splits_on_the_old_and_new_panes() {
+        let area = Rect::new(0, 0, 42, 10);
+        assert_eq!(
+            side_at_column(area, 4),
+            Side::Old,
+            "clicks in the left pane must select the old side"
+        );
+        assert_eq!(
+            side_at_column(area, 30),
+            Side::New,
+            "clicks in the right pane must select the new side"
+        );
+    }
 
     #[test]
     fn inline_comments_render_on_both_sides_and_leave_gutter_markers() {

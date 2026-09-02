@@ -1,11 +1,31 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 
 use crate::diff::ParsedDiff;
 use crate::model::Side;
 
 use super::{App, DiffLayout, DiffRow, Mode, footer_text, render};
+
+fn click(column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn buffer_rows(buffer: &Buffer) -> Vec<String> {
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_owned())
+                .collect()
+        })
+        .collect()
+}
 
 const TWO_FILE_DIFF: &str = "\
 diff --git first.rs first.rs
@@ -245,7 +265,7 @@ diff --git file.rs file.rs
 
     let mut terminal = Terminal::new(TestBackend::new(72, 16)).expect("test terminal");
     terminal
-        .draw(|frame| render(frame, &app))
+        .draw(|frame| render(frame, &mut app))
         .expect("review must render");
     let buffer = terminal.backend().buffer();
     let rows: Vec<String> = (0..buffer.area.height)
@@ -274,4 +294,148 @@ diff --git file.rs file.rs
         popup_y as u16, centered_y,
         "the comment popup must not open in the middle of the screen"
     );
+}
+
+#[test]
+fn arrow_keys_move_the_diff_selection() {
+    let mut app = App::new(ParsedDiff::parse(TWO_FILE_DIFF));
+    assert_eq!(app.selected_diff, 0);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(
+        app.selected_diff, 1,
+        "Down must select the next diff row without requiring j"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(
+        app.selected_diff, 0,
+        "Up must select the previous diff row without requiring k"
+    );
+}
+
+#[test]
+fn mouse_click_selects_the_diff_line_under_the_cursor() {
+    let mut app = App::new(ParsedDiff::parse(
+        "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1,3 +1,3 @@
+ one
+-old
++new
+",
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(72, 16)).expect("test terminal");
+    terminal
+        .draw(|frame| render(frame, &mut app))
+        .expect("review must render");
+    let rows = buffer_rows(terminal.backend().buffer());
+    let line_y = rows
+        .iter()
+        .position(|row| row.contains("+new"))
+        .expect("the added line must be visible") as u16;
+
+    assert_eq!(app.selected_diff, 0, "the file header starts selected");
+    app.handle_mouse(click(8, line_y));
+
+    assert_eq!(
+        app.selected_anchor()
+            .map(|anchor| (anchor.line, anchor.side)),
+        Some((2, Side::New)),
+        "clicking a diff line must select it for commenting, got {:?} from {rows:?}",
+        app.selected_row()
+    );
+}
+
+#[test]
+fn mouse_click_selects_the_side_by_side_column_under_the_cursor() {
+    let mut app = App::new(ParsedDiff::parse(SIDE_COMMENT_DIFF));
+    app.handle_diff_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    let mut terminal = Terminal::new(TestBackend::new(72, 16)).expect("test terminal");
+    terminal
+        .draw(|frame| render(frame, &mut app))
+        .expect("review must render");
+    let rows = buffer_rows(terminal.backend().buffer());
+    let line_y = rows
+        .iter()
+        .position(|row| row.contains("shared"))
+        .expect("the context row must be visible") as u16;
+    let old_x = rows[line_y as usize]
+        .find("shared")
+        .expect("the old-side copy must be visible") as u16;
+    let new_x = rows[line_y as usize]
+        .rfind("shared")
+        .expect("the new-side copy must be visible") as u16;
+
+    app.handle_mouse(click(old_x, line_y));
+    assert_eq!(
+        app.selected_anchor().map(|anchor| anchor.side),
+        Some(Side::Old),
+        "clicking the left column must select the old side, got {:?} from {rows:?}",
+        app.selected_anchor()
+    );
+
+    app.handle_mouse(click(new_x, line_y));
+    assert_eq!(
+        app.selected_anchor().map(|anchor| anchor.side),
+        Some(Side::New),
+        "clicking the right column must select the new side"
+    );
+}
+
+#[test]
+fn mouse_clicks_are_ignored_while_entering_a_comment() {
+    let mut app = App::new(ParsedDiff::parse(TWO_FILE_DIFF));
+    let addition = app
+        .diff_rows()
+        .iter()
+        .position(|row| {
+            matches!(
+                row,
+                DiffRow::Line { file: 0, line } if app.diff.files[0].lines[*line].text == "new"
+            )
+        })
+        .expect("the fixture must contain an added line");
+    app.select_diff(addition);
+    app.start_comment();
+    assert!(
+        matches!(app.mode, Mode::CommentInput { .. }),
+        "the test must start from an open comment box"
+    );
+    let mut terminal = Terminal::new(TestBackend::new(72, 12)).expect("test terminal");
+    terminal
+        .draw(|frame| render(frame, &mut app))
+        .expect("review must render");
+    let selected = app.selected_diff;
+
+    app.handle_mouse(click(8, 6));
+
+    assert_eq!(
+        app.selected_diff, selected,
+        "clicking must not retarget the line while the comment box is open"
+    );
+    assert!(
+        matches!(app.mode, Mode::CommentInput { .. }),
+        "a click must not dismiss comment input"
+    );
+}
+
+#[test]
+fn mouse_scroll_moves_the_diff_selection() {
+    let mut app = App::new(ParsedDiff::parse(TWO_FILE_DIFF));
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.selected_diff, 1);
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.selected_diff, 0);
 }

@@ -64,12 +64,14 @@ kind and added/deleted line counts; raw Git patch metadata is omitted. Files
 start expanded. With a file header selected, use `Enter` or `Tab` to collapse or
 expand it.
 
-Inside a review, use `j`/`k` to move between lines, `]`/`[` to move between
-files, `g`/`G` to jump to the first or last line, `c` to add a comment, `l` to
-view comments, `s` to toggle unified or side-by-side layout, `v` to show or hide
-inline comment rows, `y` to export, `?` to show context-aware help, and `q` to
-quit. Press `?`, `Esc`, or `q` to close help and return to the same screen.
-Unified layout is the default. In side-by-side layout, use the left/right arrow
-keys to choose the old or new side before adding a comment. Inline comments work
+Inside a review, use `j`/`k` or the up/down arrows to move between lines, or
+click a line with the mouse. The scroll wheel also moves the selection. Use
+`]`/`[` to move between files, `g`/`G` to jump to the first or last line, `c`
+to add a comment, `l` to view comments, `s` to toggle unified or side-by-side
+layout, `v` to show or hide inline comment rows, `y` to export, `?` to show
+context-aware help, and `q` to quit. Press `?`, `Esc`, or `q` to close help and
+return to the same screen. Unified layout is the default. In side-by-side
+layout, use the left/right arrow keys or click a column to choose the old or
+new side before adding a comment. Inline comments work
 in both layouts and are shown by default; commented lines keep a `●` gutter
 marker when inline rows are hidden.

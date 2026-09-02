@@ -8,12 +8,13 @@ use ratatui::widgets::{Block, List, ListItem, ListState};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::diff::{DiffFile, DiffLine, DiffLineKind};
+use crate::model::Side;
 
 use super::{App, DiffLayout, DiffRow};
 
-pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<Rect> {
-    const HIGHLIGHT_SYMBOL: &str = "> ";
+pub(super) const HIGHLIGHT_SYMBOL: &str = "> ";
 
+pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
     let block = Block::bordered().title(format!(
         " trv | files changed | {} | {} comments ",
         app.diff_layout.as_str(),
@@ -67,7 +68,43 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<Rec
         state.select(Some(app.selected_diff));
     }
     frame.render_stateful_widget(list, area, &mut state);
-    selected_line_rect(inner, &item_heights, app.selected_diff, state.offset())
+    app.diff_list.inner = inner;
+    app.diff_list.offset = state.offset();
+    app.diff_list.heights = item_heights;
+    selected_line_rect(
+        inner,
+        &app.diff_list.heights,
+        app.selected_diff,
+        app.diff_list.offset,
+    )
+}
+
+pub(super) fn item_index_at(
+    list_area: Rect,
+    heights: &[u16],
+    offset: usize,
+    row: u16,
+) -> Option<usize> {
+    if list_area.height == 0 || row < list_area.y || row >= list_area.bottom() {
+        return None;
+    }
+
+    let mut y = list_area.y;
+    for (index, height) in heights.iter().copied().enumerate().skip(offset) {
+        if y >= list_area.bottom() {
+            return None;
+        }
+        let next = y.saturating_add(height).min(list_area.bottom());
+        if row >= y && row < next {
+            return Some(index);
+        }
+        y = next;
+    }
+    None
+}
+
+pub(super) fn side_at_column(list_area: Rect, column: u16) -> Side {
+    side_by_side::side_at_column(list_area, column)
 }
 
 pub(super) fn selected_line_rect(
@@ -238,7 +275,7 @@ mod tests {
     use crate::diff::{DiffLineKind, ParsedDiff};
 
     use super::super::Mode;
-    use super::{App, item_lines, selected_line_rect, wrap_comment_body};
+    use super::{App, item_index_at, item_lines, selected_line_rect, wrap_comment_body};
     use ratatui::layout::Rect;
 
     // Ten body columns force both word-boundary and hard-word wrapping.
@@ -317,6 +354,27 @@ diff --git a/src/lib.rs b/src/lib.rs
             selected_line_rect(area, &[1, 3, 1], 1, 2),
             None,
             "a selected item scrolled above the viewport must not produce an anchor"
+        );
+    }
+
+    #[test]
+    fn item_index_at_maps_a_screen_row_onto_the_visible_item() {
+        let area = Rect::new(1, 2, 40, 8);
+        let heights = [1, 3, 1, 1];
+
+        assert_eq!(item_index_at(area, &heights, 0, 2), Some(0));
+        assert_eq!(
+            item_index_at(area, &heights, 0, 4),
+            Some(1),
+            "clicks on wrapped comment rows must still select that diff item"
+        );
+        assert_eq!(item_index_at(area, &heights, 0, 5), Some(1));
+        assert_eq!(item_index_at(area, &heights, 0, 6), Some(2));
+        assert_eq!(item_index_at(area, &heights, 1, 2), Some(1));
+        assert_eq!(
+            item_index_at(area, &heights, 0, 1),
+            None,
+            "clicks on the list border must not select a diff row"
         );
     }
 }

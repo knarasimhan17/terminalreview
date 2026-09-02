@@ -8,7 +8,10 @@ use std::io;
 
 use anyhow::{Context, Result};
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -72,6 +75,14 @@ struct App {
     mode: Mode,
     status: Option<String>,
     help: bool,
+    diff_list: DiffListLayout,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DiffListLayout {
+    inner: Rect,
+    offset: usize,
+    heights: Vec<u16>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +107,7 @@ impl App {
             mode: Mode::Diff,
             status: None,
             help: false,
+            diff_list: DiffListLayout::default(),
         }
     }
 
@@ -124,6 +136,20 @@ impl App {
             self.request_quit()
         } else {
             self.handle_quit_key(key)
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.help || !matches!(self.mode, Mode::Diff) {
+            return;
+        }
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.select_at_pointer(mouse.column, mouse.row);
+            }
+            MouseEventKind::ScrollDown => self.move_diff_down(),
+            MouseEventKind::ScrollUp => self.move_diff_up(),
+            _ => {}
         }
     }
 
@@ -299,12 +325,16 @@ fn run_review(terminal: &mut TrvTerminal, diff: ParsedDiff) -> Result<ReviewOutc
 
     loop {
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &mut app))
             .context("failed to draw review")?;
-        if let Event::Key(key) = event::read().context("failed to read terminal input")?
-            && let Some(outcome) = app.handle_key(key)
-        {
-            return Ok(outcome);
+        match event::read().context("failed to read terminal input")? {
+            Event::Key(key) => {
+                if let Some(outcome) = app.handle_key(key) {
+                    return Ok(outcome);
+                }
+            }
+            Event::Mouse(mouse) => app.handle_mouse(mouse),
+            _ => {}
         }
     }
 }
@@ -312,6 +342,7 @@ fn run_review(terminal: &mut TrvTerminal, diff: ParsedDiff) -> Result<ReviewOutc
 struct TerminalMode {
     raw: bool,
     alternate: bool,
+    mouse: bool,
 }
 
 impl TerminalMode {
@@ -319,6 +350,7 @@ impl TerminalMode {
         let mut mode = Self {
             raw: false,
             alternate: false,
+            mouse: false,
         };
         enable_raw_mode().context("failed to enable terminal raw mode")?;
         mode.raw = true;
@@ -326,6 +358,8 @@ impl TerminalMode {
         let mut output = io::stdout();
         execute!(output, EnterAlternateScreen).context("failed to enter alternate screen")?;
         mode.alternate = true;
+        execute!(output, EnableMouseCapture).context("failed to enable mouse capture")?;
+        mode.mouse = true;
         execute!(output, Hide).context("failed to hide terminal cursor")?;
         Ok(mode)
     }
@@ -334,6 +368,11 @@ impl TerminalMode {
 impl Drop for TerminalMode {
     fn drop(&mut self) {
         let mut output = io::stdout();
+        if self.mouse
+            && let Err(error) = execute!(output, DisableMouseCapture)
+        {
+            eprintln!("trv: failed to disable mouse capture: {error}");
+        }
         let screen_result = if self.alternate {
             execute!(output, Show, LeaveAlternateScreen)
         } else {
@@ -350,7 +389,7 @@ impl Drop for TerminalMode {
     }
 }
 
-fn render(frame: &mut Frame<'_>, app: &App) {
+fn render(frame: &mut Frame<'_>, app: &mut App) {
     let [content, footer] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
 
