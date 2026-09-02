@@ -66,6 +66,9 @@ expand it.
 
 Inside a review, use `j`/`k` to move between lines, `]`/`[` to move between
 files, `g`/`G` to jump to the first or last line, `c` to add a comment, `l` to
-view comments, `v` to show or hide inline comment rows, `y` to export, and `q`
-to quit. Inline comments are shown by default; commented lines keep a `●`
-gutter marker when inline rows are hidden.
+view comments, `s` to toggle unified or side-by-side layout, `v` to show or hide
+inline comment rows, `y` to export, and `q` to quit. Unified layout is the
+default. In side-by-side layout, use the left/right arrow keys to choose the old
+or new side before adding a comment. Inline comments work in both layouts and
+are shown by default; commented lines keep a `●` gutter marker when inline rows
+are hidden.

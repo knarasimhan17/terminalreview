@@ -17,6 +17,31 @@ pub(crate) enum FileChangeKind {
     Renamed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SideBySideRow {
+    Hunk(usize),
+    Paired { old: usize, new: usize },
+    Old(usize),
+    New(usize),
+    Meta(usize),
+}
+
+impl SideBySideRow {
+    pub(crate) fn old_line(self) -> Option<usize> {
+        match self {
+            Self::Paired { old, .. } | Self::Old(old) => Some(old),
+            Self::Hunk(_) | Self::New(_) | Self::Meta(_) => None,
+        }
+    }
+
+    pub(crate) fn new_line(self) -> Option<usize> {
+        match self {
+            Self::Paired { new, .. } | Self::New(new) => Some(new),
+            Self::Hunk(_) | Self::Old(_) | Self::Meta(_) => None,
+        }
+    }
+}
+
 impl FileChangeKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
@@ -49,6 +74,13 @@ impl DiffLine {
     pub(crate) fn anchor(&self) -> Option<&LineAnchor> {
         self.new_anchor.as_ref().or(self.old_anchor.as_ref())
     }
+
+    pub(crate) fn anchor_on(&self, side: Side) -> Option<&LineAnchor> {
+        match side {
+            Side::Old => self.old_anchor.as_ref(),
+            Side::New => self.new_anchor.as_ref(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,6 +99,10 @@ impl DiffFile {
             Some(previous_path) => format!("{previous_path} -> {}", self.path),
             None => self.path.clone(),
         }
+    }
+
+    pub(crate) fn side_by_side_rows(&self) -> Vec<SideBySideRow> {
+        pair_side_by_side_rows(&self.lines)
     }
 }
 
@@ -102,12 +138,16 @@ impl ParsedDiff {
             } else if let Some(path) = text.strip_prefix("rename to ") {
                 file.new_path = Some(clean_path(path));
                 file.change_kind = FileChangeKind::Renamed;
-            } else if let Some(path) = text.strip_prefix("--- ") {
+            } else if !file.in_hunk
+                && let Some(path) = text.strip_prefix("--- ")
+            {
                 file.old_path = diff_path(path);
                 if file.old_path.is_none() {
                     file.change_kind = FileChangeKind::Added;
                 }
-            } else if let Some(path) = text.strip_prefix("+++ ") {
+            } else if !file.in_hunk
+                && let Some(path) = text.strip_prefix("+++ ")
+            {
                 file.new_path = diff_path(path);
                 if file.new_path.is_none() {
                     file.change_kind = FileChangeKind::Deleted;
@@ -120,15 +160,6 @@ impl ParsedDiff {
                 file.push_deletion(content);
             } else if let Some(content) = text.strip_prefix(' ') {
                 file.push_context(content);
-            } else if text == r"\ No newline at end of file" {
-                file.lines.push(diff_line(
-                    "No newline at end of file",
-                    DiffLineKind::Meta,
-                    None,
-                    None,
-                    None,
-                    None,
-                ));
             } else if text.starts_with("Binary files ") {
                 file.lines.push(diff_line(
                     "Binary content changed.",
@@ -160,6 +191,7 @@ struct FileBuilder {
     lines: Vec<DiffLine>,
     old_line: Option<u32>,
     new_line: Option<u32>,
+    in_hunk: bool,
 }
 
 impl FileBuilder {
@@ -175,6 +207,7 @@ impl FileBuilder {
             lines: Vec::new(),
             old_line: None,
             new_line: None,
+            in_hunk: false,
         }
     }
 
@@ -210,6 +243,7 @@ impl FileBuilder {
         let (old_line, new_line) = hunk_starts(header);
         self.old_line = old_line;
         self.new_line = new_line;
+        self.in_hunk = true;
         self.lines.push(diff_line(
             hunk_context(header),
             DiffLineKind::Hunk,
@@ -377,110 +411,59 @@ fn next_line(line: Option<u32>) -> Option<u32> {
     line.and_then(|line| line.checked_add(1))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{DiffLineKind, FileChangeKind, ParsedDiff};
+fn pair_side_by_side_rows(lines: &[DiffLine]) -> Vec<SideBySideRow> {
+    let mut rows = Vec::new();
+    let mut index = 0;
 
-    const DIFF: &str = "\
-diff --git added.rs added.rs
-new file mode 100644
-index 0000000..1111111
---- /dev/null
-+++ added.rs
-@@ -0,0 +1 @@
-+new
-\\ No newline at end of file
-diff --git binary.bin binary.bin
-index 5555555..6666666 100644
-Binary files binary.bin and binary.bin differ
-diff --git deleted.rs deleted.rs
-deleted file mode 100644
-index 2222222..0000000
---- deleted.rs
-+++ /dev/null
-@@ -1 +0,0 @@
--old
-diff --git modified.rs modified.rs
-index 3333333..4444444 100644
---- modified.rs
-+++ modified.rs
-@@ -1 +1 @@ fn render()
--before
-+after
-diff --git old.rs new.rs
-similarity index 100%
-rename from old.rs
-rename to new.rs
-";
+    while index < lines.len() {
+        match lines[index].kind {
+            DiffLineKind::Hunk => {
+                rows.push(SideBySideRow::Hunk(index));
+                index += 1;
+            }
+            DiffLineKind::Context => {
+                rows.push(SideBySideRow::Paired {
+                    old: index,
+                    new: index,
+                });
+                index += 1;
+            }
+            DiffLineKind::Meta => {
+                rows.push(SideBySideRow::Meta(index));
+                index += 1;
+            }
+            DiffLineKind::Addition | DiffLineKind::Deletion => {
+                let mut old_lines = Vec::new();
+                let mut new_lines = Vec::new();
+                while index < lines.len()
+                    && matches!(
+                        lines[index].kind,
+                        DiffLineKind::Addition | DiffLineKind::Deletion
+                    )
+                {
+                    match lines[index].kind {
+                        DiffLineKind::Addition => new_lines.push(index),
+                        DiffLineKind::Deletion => old_lines.push(index),
+                        DiffLineKind::Hunk | DiffLineKind::Context | DiffLineKind::Meta => {
+                            unreachable!("the change-run condition excludes non-change lines")
+                        }
+                    }
+                    index += 1;
+                }
 
-    #[test]
-    fn parsed_diff_groups_displayable_lines_and_file_summaries() {
-        let parsed = ParsedDiff::parse(DIFF);
-        let summaries = parsed
-            .files
-            .iter()
-            .map(|file| {
-                (
-                    file.display_path(),
-                    file.change_kind,
-                    file.additions,
-                    file.deletions,
-                    file.lines
-                        .iter()
-                        .map(|line| (line.kind, line.text.as_str()))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            summaries,
-            vec![
-                (
-                    "added.rs".to_owned(),
-                    FileChangeKind::Added,
-                    1,
-                    0,
-                    vec![
-                        (DiffLineKind::Hunk, ""),
-                        (DiffLineKind::Addition, "new"),
-                        (DiffLineKind::Meta, "No newline at end of file"),
-                    ],
-                ),
-                (
-                    "binary.bin".to_owned(),
-                    FileChangeKind::Modified,
-                    0,
-                    0,
-                    vec![(DiffLineKind::Meta, "Binary content changed.")],
-                ),
-                (
-                    "deleted.rs".to_owned(),
-                    FileChangeKind::Deleted,
-                    0,
-                    1,
-                    vec![(DiffLineKind::Hunk, ""), (DiffLineKind::Deletion, "old"),],
-                ),
-                (
-                    "modified.rs".to_owned(),
-                    FileChangeKind::Modified,
-                    1,
-                    1,
-                    vec![
-                        (DiffLineKind::Hunk, "fn render()"),
-                        (DiffLineKind::Deletion, "before"),
-                        (DiffLineKind::Addition, "after"),
-                    ],
-                ),
-                (
-                    "old.rs -> new.rs".to_owned(),
-                    FileChangeKind::Renamed,
-                    0,
-                    0,
-                    vec![],
-                ),
-            ],
-            "parsed files must contain review rows and summaries without raw patch metadata"
-        );
+                let paired = old_lines.len().min(new_lines.len());
+                rows.extend((0..paired).map(|offset| SideBySideRow::Paired {
+                    old: old_lines[offset],
+                    new: new_lines[offset],
+                }));
+                rows.extend(old_lines[paired..].iter().copied().map(SideBySideRow::Old));
+                rows.extend(new_lines[paired..].iter().copied().map(SideBySideRow::New));
+            }
+        }
     }
+
+    rows
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,3 +1,5 @@
+mod side_by_side;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -7,13 +9,14 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::diff::{DiffFile, DiffLine, DiffLineKind};
 
-use super::{App, DiffRow};
+use super::{App, DiffLayout, DiffRow};
 
 pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     const HIGHLIGHT_SYMBOL: &str = "> ";
 
     let block = Block::bordered().title(format!(
-        " trv | files changed | unified | {} comments ",
+        " trv | files changed | {} | {} comments ",
+        app.diff_layout.as_str(),
         app.comments.len()
     ));
     let line_width = usize::from(block.inner(area).width)
@@ -23,7 +26,8 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         vec![ListItem::new("No changes to review.")]
     } else {
         rows.iter()
-            .map(|row| match *row {
+            .enumerate()
+            .map(|(index, row)| match *row {
                 DiffRow::File(file) => ListItem::new(file_header(
                     &app.diff.files[file],
                     line_width,
@@ -34,17 +38,28 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     &app.diff.files[file].lines[line],
                     line_width,
                 )),
+                DiffRow::SideBySide { file, row } => ListItem::new(side_by_side::item_lines(
+                    app,
+                    &app.diff.files[file],
+                    row,
+                    line_width,
+                    index == app.selected_diff,
+                )),
             })
             .collect::<Vec<_>>()
     };
     let list = List::new(items)
         .block(block)
-        .highlight_symbol(HIGHLIGHT_SYMBOL)
-        .highlight_style(
+        .highlight_symbol(HIGHLIGHT_SYMBOL);
+    let list = if app.diff_layout == DiffLayout::Unified {
+        list.highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
-        );
+        )
+    } else {
+        list
+    };
     let mut state = ListState::default();
     if !rows.is_empty() {
         state.select(Some(app.selected_diff));
