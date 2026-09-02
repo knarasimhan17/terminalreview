@@ -139,7 +139,7 @@ fn display_text(line: &DiffLine) -> String {
     }
 }
 
-fn wrap_comment_body(body: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap_comment_body(body: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut rows = Vec::new();
 
