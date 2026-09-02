@@ -6,7 +6,7 @@ use ratatui::buffer::Buffer;
 use crate::diff::ParsedDiff;
 use crate::model::Side;
 
-use super::{App, DiffLayout, DiffRow, Mode, footer_text, render};
+use super::{App, DiffLayout, DiffRow, Mode, dock_bottom, footer_text, render};
 
 fn click(column: u16, row: u16) -> MouseEvent {
     MouseEvent {
@@ -293,6 +293,55 @@ diff --git file.rs file.rs
     assert_ne!(
         popup_y as u16, centered_y,
         "the comment popup must not open in the middle of the screen"
+    );
+}
+
+#[test]
+fn quit_confirm_docks_to_the_bottom_instead_of_the_screen_center() {
+    let screen = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let area = dock_bottom(screen, screen.width, 3);
+    assert_eq!(
+        area.y, 21,
+        "the quit prompt must sit on the last three rows"
+    );
+    assert_eq!(area.height, 3);
+    assert_eq!(area.width, 80);
+    assert_ne!(
+        area.y,
+        screen.height.saturating_sub(3) / 2,
+        "the quit prompt must not float in the middle of the review"
+    );
+
+    let mut app = App::new(ParsedDiff::parse(TWO_FILE_DIFF));
+    app.select_diff(3);
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("the fixture must open comment input");
+    };
+    body.push_str("keep this");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    assert!(
+        matches!(app.mode, Mode::QuitConfirm { .. }),
+        "q must still confirm before discarding comments"
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 16)).expect("test terminal");
+    terminal
+        .draw(|frame| render(frame, &mut app))
+        .expect("quit confirm must render");
+    let rows = buffer_rows(terminal.backend().buffer());
+    let prompt_y = rows
+        .iter()
+        .position(|row| row.contains("Discard 1 unexported comment?"))
+        .expect("the confirm prompt must be visible");
+    assert!(
+        prompt_y >= 13,
+        "the confirm prompt must render at the bottom, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("Quit")),
+        "the prompt must stay labeled as a quit confirmation"
     );
 }
 

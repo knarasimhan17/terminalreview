@@ -17,11 +17,10 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
-use unicode_width::UnicodeWidthStr;
 
 use crate::diff::{LineAnchor, ParsedDiff, SideBySideRow};
 use crate::model::{Comment, Side};
@@ -491,16 +490,12 @@ fn footer_text(app: &App) -> String {
 
 fn render_quit_confirm(frame: &mut Frame<'_>, comment_count: usize) {
     let suffix = if comment_count == 1 { "" } else { "s" };
-    let prompt = format!("Discard {comment_count} unexported comment{suffix}? (y/N)");
+    let prompt = format!(" Discard {comment_count} unexported comment{suffix}? (y/N)");
     let screen = frame.area();
-    let desired_width = UnicodeWidthStr::width(prompt.as_str()).saturating_add(4);
-    let width = desired_width.min(usize::from(screen.width)) as u16;
-    let area = centered(screen, width, 3);
+    let area = dock_bottom(screen, screen.width, 3);
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(prompt)
-            .alignment(Alignment::Center)
-            .block(Block::bordered().title(" Quit ")),
+        Paragraph::new(prompt).block(Block::bordered().title(" Quit ")),
         area,
     );
 }
@@ -511,6 +506,17 @@ pub(super) fn centered(outer: Rect, width: u16, height: u16) -> Rect {
     Rect::new(
         outer.x + outer.width.saturating_sub(width) / 2,
         outer.y + outer.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+fn dock_bottom(outer: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(outer.width);
+    let height = height.min(outer.height);
+    Rect::new(
+        outer.x,
+        outer.bottom().saturating_sub(height),
         width,
         height,
     )
