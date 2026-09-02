@@ -354,14 +354,19 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     let [content, footer] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
 
-    match app.visible_view() {
+    let selected_row = match app.visible_view() {
         View::Diff => diff_view::render(frame, content, app),
-        View::Comments => render_comments(frame, content, app),
-    }
+        View::Comments => {
+            render_comments(frame, content, app);
+            None
+        }
+    };
     render_footer(frame, footer, app);
 
     match &app.mode {
-        Mode::CommentInput { body, .. } => comment_input::render(frame, body),
+        Mode::CommentInput { body, .. } => {
+            comment_input::render(frame, content, body, selected_row)
+        }
         Mode::QuitConfirm { .. } => render_quit_confirm(frame, app.comments.len()),
         Mode::Diff | Mode::Comments => {}
     }
