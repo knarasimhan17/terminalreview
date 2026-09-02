@@ -422,6 +422,71 @@ fn mouse_clicks_are_ignored_while_entering_a_comment() {
 }
 
 #[test]
+fn clicking_a_visible_line_does_not_scroll_it_to_the_bottom() {
+    let mut body = String::from(
+        "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1,20 +1,20 @@
+",
+    );
+    for index in 1..=20 {
+        body.push_str(&format!(" line-{index:02}\n"));
+    }
+    let mut app = App::new(ParsedDiff::parse(&body));
+    app.select_diff(app.diff_rows().len().saturating_sub(1));
+
+    let mut terminal = Terminal::new(TestBackend::new(72, 10)).expect("test terminal");
+    terminal
+        .draw(|frame| render(frame, &mut app))
+        .expect("review must render");
+    let offset = app.diff_list.offset;
+    assert!(
+        offset > 0,
+        "the fixture must start scrolled past the first page"
+    );
+
+    let rows = buffer_rows(terminal.backend().buffer());
+    let target_y = rows
+        .iter()
+        .position(|row| row.contains("line-16"))
+        .expect("a mid-viewport line must stay on screen after scrolling to the end")
+        as u16;
+    let bottom_y = rows
+        .iter()
+        .rposition(|row| !row.trim().is_empty())
+        .expect("the list must have a bottom row") as u16;
+    assert!(
+        target_y < bottom_y,
+        "the clicked line must start above the bottom of the viewport, got {rows:?}"
+    );
+
+    app.handle_mouse(click(8, target_y));
+    terminal
+        .draw(|frame| render(frame, &mut app))
+        .expect("review must render after the click");
+    let rows = buffer_rows(terminal.backend().buffer());
+    let new_y = rows
+        .iter()
+        .position(|row| row.contains("line-16"))
+        .expect("the clicked line must remain visible") as u16;
+
+    assert_eq!(
+        app.diff_list.offset, offset,
+        "clicking a visible line must keep the current viewport"
+    );
+    assert_eq!(
+        new_y, target_y,
+        "the clicked line must stay where it was instead of jumping to the bottom, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("line-20")),
+        "later lines that were on screen must stay on screen after the click, got {rows:?}"
+    );
+}
+
+#[test]
 fn mouse_scroll_moves_the_diff_selection() {
     let mut app = App::new(ParsedDiff::parse(TWO_FILE_DIFF));
     app.handle_mouse(MouseEvent {

@@ -63,7 +63,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option
     } else {
         list
     };
-    let mut state = ListState::default();
+    let mut state = ListState::default().with_offset(app.diff_list.offset);
     if !rows.is_empty() {
         state.select(Some(app.selected_diff));
     }
