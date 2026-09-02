@@ -1,16 +1,17 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, ListState};
+use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::diff::ParsedDiff;
 use crate::git::{CommitLogEntry, PreparedReview};
 
-use super::{ReviewOutcome, TrvTerminal, run_review, with_terminal};
+use super::{ReviewOutcome, TrvTerminal, bindings, run_review, with_terminal};
 
 pub(crate) enum ReviewTarget {
     WorkingTree,
@@ -46,6 +47,7 @@ struct CommitPicker {
     working_tree_clean: bool,
     step: PickerStep,
     now: DateTime<Utc>,
+    help: bool,
 }
 
 impl CommitPicker {
@@ -55,6 +57,7 @@ impl CommitPicker {
             working_tree_clean,
             step: PickerStep::Source { selected: 0 },
             now: Utc::now(),
+            help: false,
         }
     }
 
@@ -62,18 +65,30 @@ impl CommitPicker {
         if key.kind == KeyEventKind::Release {
             return None;
         }
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            return Some(PickerChoice::Quit);
+        if self.help {
+            if bindings::closes_help(&key) {
+                self.help = false;
+            }
+            return None;
         }
 
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.move_down(),
-            KeyCode::Char('k') | KeyCode::Up => self.move_up(),
-            KeyCode::Enter => return self.select(),
-            KeyCode::Char('q') | KeyCode::Esc => return self.back(),
-            _ => {}
+        let action = bindings::action_for(bindings::picker_bindings(self.context()).iter(), &key)?;
+        match action {
+            bindings::PickerAction::MoveDown => self.move_down(),
+            bindings::PickerAction::MoveUp => self.move_up(),
+            bindings::PickerAction::Select => return self.select(),
+            bindings::PickerAction::Back => return self.back(),
+            bindings::PickerAction::Quit => return Some(PickerChoice::Quit),
+            bindings::PickerAction::Help => self.help = true,
         }
         None
+    }
+
+    fn context(&self) -> bindings::PickerContext {
+        match self.step {
+            PickerStep::Source { .. } => bindings::PickerContext::Source,
+            PickerStep::Base { .. } => bindings::PickerContext::Base,
+        }
     }
 
     fn move_down(&mut self) {
@@ -197,7 +212,9 @@ fn choose_review_target(
 }
 
 fn render(frame: &mut Frame<'_>, picker: &CommitPicker) {
-    let area = frame.area();
+    let screen = frame.area();
+    let [area, footer] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(screen);
     let (title, items) = match picker.step {
         PickerStep::Source { .. } => {
             let mut items = Vec::with_capacity(picker.commits.len() + 1);
@@ -237,6 +254,19 @@ fn render(frame: &mut Frame<'_>, picker: &CommitPicker) {
     let mut state = ListState::default();
     state.select(Some(picker.selected()));
     frame.render_stateful_widget(list, area, &mut state);
+    frame.render_widget(
+        Paragraph::new(bindings::HELP_HINT).style(Style::default().fg(Color::DarkGray)),
+        footer,
+    );
+
+    if picker.help {
+        let context = picker.context();
+        bindings::render_help(
+            frame,
+            context.help_title(),
+            bindings::picker_bindings(context).iter(),
+        );
+    }
 }
 
 fn working_tree_item(clean: bool) -> ListItem<'static> {
@@ -337,4 +367,71 @@ fn truncate_to_width(text: &str, max_width: usize) -> String {
     }
     truncated.push_str(ELLIPSIS);
     truncated
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::{CommitLogEntry, CommitPicker, PickerStep, Utc};
+
+    #[test]
+    fn help_closes_without_changing_either_picker_step() {
+        let commits = vec![commit("source", Some("parent")), commit("parent", None)];
+        let mut picker = CommitPicker::new(commits, false);
+
+        for close in [KeyCode::Char('?'), KeyCode::Esc, KeyCode::Char('q')] {
+            picker.handle_key(key(KeyCode::Char('?')));
+            assert!(picker.help, "? must open help in the source picker");
+            picker.handle_key(key(KeyCode::Char('j')));
+            picker.handle_key(key(close));
+            assert!(!picker.help, "a help close key must dismiss the overlay");
+            assert!(
+                matches!(picker.step, PickerStep::Source { selected: 0 }),
+                "help must preserve the source picker selection"
+            );
+        }
+
+        picker.handle_key(key(KeyCode::Down));
+        picker.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(
+                picker.step,
+                PickerStep::Base {
+                    source: 0,
+                    selected: 1
+                }
+            ),
+            "selecting a commit must open its parent in the base picker"
+        );
+
+        picker.handle_key(key(KeyCode::Char('?')));
+        picker.handle_key(key(KeyCode::Up));
+        picker.handle_key(key(KeyCode::Char('q')));
+        assert!(
+            matches!(
+                picker.step,
+                PickerStep::Base {
+                    source: 0,
+                    selected: 1
+                }
+            ),
+            "closing help must preserve the base picker selection"
+        );
+    }
+
+    fn commit(sha: &str, first_parent_sha: Option<&str>) -> CommitLogEntry {
+        CommitLogEntry {
+            sha: sha.to_owned(),
+            short_sha: sha.to_owned(),
+            first_parent_sha: first_parent_sha.map(str::to_owned),
+            subject: sha.to_owned(),
+            committed_at: Utc::now(),
+            unpushed: false,
+        }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
 }

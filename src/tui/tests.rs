@@ -49,6 +49,10 @@ diff --git file.rs file.rs
         footer_text(&app).contains("v inline comments: on"),
         "the footer must document the toggle and its state"
     );
+    assert!(
+        footer_text(&app).contains("? help"),
+        "the review footer must make help discoverable"
+    );
 
     app.handle_diff_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
 
@@ -56,6 +60,51 @@ diff --git file.rs file.rs
     assert_eq!(
         app.selected_diff, selected,
         "toggling inline comments must preserve the selected diff line"
+    );
+}
+
+#[test]
+fn help_closes_without_changing_review_state() {
+    let mut app = App::new(ParsedDiff::parse(TWO_FILE_DIFF));
+    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    app.select_diff(2);
+    let selected_diff = app.selected_diff;
+    let collapsed_files = app.collapsed_files.clone();
+
+    for close in [KeyCode::Char('?'), KeyCode::Esc, KeyCode::Char('q')] {
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(app.help, "? must open help in the review");
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        let outcome = app.handle_key(KeyEvent::new(close, KeyModifiers::NONE));
+
+        assert!(outcome.is_none(), "closing help must not exit the review");
+        assert!(!app.help, "a help close key must dismiss the overlay");
+        assert_eq!(
+            app.selected_diff, selected_diff,
+            "help must preserve the selected diff row"
+        );
+        assert_eq!(
+            app.collapsed_files, collapsed_files,
+            "help must preserve file collapse state"
+        );
+        assert_eq!(
+            app.diff_layout,
+            DiffLayout::SideBySide,
+            "help must preserve the active review layout"
+        );
+    }
+
+    app.mode = Mode::Comments;
+    app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    let outcome = app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+
+    assert!(
+        outcome.is_none(),
+        "q must close help instead of quitting from the comment list"
+    );
+    assert!(
+        matches!(app.mode, Mode::Comments),
+        "closing help must return to the comment list"
     );
 }
 

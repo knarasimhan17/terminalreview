@@ -1,3 +1,4 @@
+mod bindings;
 mod diff_view;
 mod picker;
 mod review;
@@ -30,7 +31,7 @@ pub(crate) enum ReviewOutcome {
     Quit,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
     Diff,
     Comments,
@@ -69,6 +70,7 @@ struct App {
     inline_comments: bool,
     mode: Mode,
     status: Option<String>,
+    help: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +94,7 @@ impl App {
             inline_comments: true,
             mode: Mode::Diff,
             status: None,
+            help: false,
         }
     }
 
@@ -99,8 +102,11 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return None;
         }
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            return self.request_quit();
+        if self.help {
+            if bindings::closes_help(&key) {
+                self.help = false;
+            }
+            return None;
         }
 
         if matches!(self.mode, Mode::Diff) {
@@ -108,34 +114,44 @@ impl App {
         } else if matches!(self.mode, Mode::Comments) {
             self.handle_comments_key(key)
         } else if matches!(self.mode, Mode::CommentInput { .. }) {
-            self.handle_input_key(key)
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                self.request_quit()
+            } else {
+                self.handle_input_key(key)
+            }
+        } else if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.request_quit()
         } else {
             self.handle_quit_key(key)
         }
     }
 
     fn handle_diff_key(&mut self, key: KeyEvent) -> Option<ReviewOutcome> {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.move_diff_down(),
-            KeyCode::Char('k') | KeyCode::Up => self.move_diff_up(),
-            KeyCode::Char('g') | KeyCode::Home => self.select_diff(0),
-            KeyCode::Char('G') | KeyCode::End => {
+        let context = self.review_context();
+        let action = bindings::action_for(bindings::review_bindings(context), &key)?;
+        match action {
+            bindings::ReviewAction::MoveDown => self.move_diff_down(),
+            bindings::ReviewAction::MoveUp => self.move_diff_up(),
+            bindings::ReviewAction::First => self.select_diff(0),
+            bindings::ReviewAction::Last => {
                 self.select_diff(self.diff_rows().len().saturating_sub(1));
             }
-            KeyCode::Char(']') => self.next_file(),
-            KeyCode::Char('[') => self.previous_file(),
-            KeyCode::Left => self.select_side(Side::Old),
-            KeyCode::Right => self.select_side(Side::New),
-            KeyCode::Enter => {
+            bindings::ReviewAction::NextFile => self.next_file(),
+            bindings::ReviewAction::PreviousFile => self.previous_file(),
+            bindings::ReviewAction::SelectOld => self.select_side(Side::Old),
+            bindings::ReviewAction::SelectNew => self.select_side(Side::New),
+            bindings::ReviewAction::ToggleFile => {
                 self.toggle_selected_file();
             }
-            KeyCode::Tab if matches!(self.selected_row(), Some(DiffRow::File(_))) => {
-                self.toggle_selected_file();
+            bindings::ReviewAction::ToggleFileOrComments => {
+                if !self.toggle_selected_file() {
+                    self.mode = Mode::Comments;
+                }
             }
-            KeyCode::Tab => self.mode = Mode::Comments,
-            KeyCode::Char('c') => self.start_comment(),
-            KeyCode::Char('s') => self.toggle_diff_layout(),
-            KeyCode::Char('v') => {
+            bindings::ReviewAction::AddComment => self.start_comment(),
+            bindings::ReviewAction::OpenComments => self.mode = Mode::Comments,
+            bindings::ReviewAction::ToggleLayout => self.toggle_diff_layout(),
+            bindings::ReviewAction::ToggleInlineComments => {
                 self.inline_comments = !self.inline_comments;
                 let state = if self.inline_comments {
                     "shown"
@@ -144,38 +160,66 @@ impl App {
                 };
                 self.status = Some(format!("Inline comments {state}."));
             }
-            KeyCode::Char('l') => self.mode = Mode::Comments,
-            KeyCode::Char('y') => {
+            bindings::ReviewAction::Export => {
                 return Some(ReviewOutcome::Export(self.comments.clone()));
             }
-            KeyCode::Char('q') | KeyCode::Esc => return self.request_quit(),
-            _ => {}
+            bindings::ReviewAction::Quit => return self.request_quit(),
+            bindings::ReviewAction::Help => self.help = true,
+            bindings::ReviewAction::ReturnToDiff => {
+                unreachable!("diff keymap cannot contain comment-list actions")
+            }
         }
         None
     }
 
     fn handle_comments_key(&mut self, key: KeyEvent) -> Option<ReviewOutcome> {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down
-                if self.selected_comment + 1 < self.comments.len() =>
-            {
-                self.selected_comment += 1;
+        let action = bindings::action_for(
+            bindings::review_bindings(bindings::ReviewContext::Comments),
+            &key,
+        )?;
+        match action {
+            bindings::ReviewAction::MoveDown => {
+                if self.selected_comment + 1 < self.comments.len() {
+                    self.selected_comment += 1;
+                }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            bindings::ReviewAction::MoveUp => {
                 self.selected_comment = self.selected_comment.saturating_sub(1);
             }
-            KeyCode::Char('g') | KeyCode::Home => self.selected_comment = 0,
-            KeyCode::Char('G') | KeyCode::End => {
+            bindings::ReviewAction::First => self.selected_comment = 0,
+            bindings::ReviewAction::Last => {
                 self.selected_comment = self.comments.len().saturating_sub(1);
             }
-            KeyCode::Char('l') | KeyCode::Tab | KeyCode::Esc => self.mode = Mode::Diff,
-            KeyCode::Char('y') => {
+            bindings::ReviewAction::ReturnToDiff => self.mode = Mode::Diff,
+            bindings::ReviewAction::Export => {
                 return Some(ReviewOutcome::Export(self.comments.clone()));
             }
-            KeyCode::Char('q') => return self.request_quit(),
-            _ => {}
+            bindings::ReviewAction::Quit => return self.request_quit(),
+            bindings::ReviewAction::Help => self.help = true,
+            bindings::ReviewAction::NextFile
+            | bindings::ReviewAction::PreviousFile
+            | bindings::ReviewAction::SelectOld
+            | bindings::ReviewAction::SelectNew
+            | bindings::ReviewAction::ToggleFile
+            | bindings::ReviewAction::ToggleFileOrComments
+            | bindings::ReviewAction::AddComment
+            | bindings::ReviewAction::OpenComments
+            | bindings::ReviewAction::ToggleInlineComments
+            | bindings::ReviewAction::ToggleLayout => {
+                unreachable!("comment-list keymap cannot contain diff actions")
+            }
         }
         None
+    }
+
+    fn review_context(&self) -> bindings::ReviewContext {
+        match self.visible_view() {
+            View::Comments => bindings::ReviewContext::Comments,
+            View::Diff if self.diff_layout == DiffLayout::Unified => {
+                bindings::ReviewContext::Unified
+            }
+            View::Diff => bindings::ReviewContext::SideBySide,
+        }
     }
 
     fn handle_input_key(&mut self, key: KeyEvent) -> Option<ReviewOutcome> {
@@ -320,6 +364,14 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         Mode::QuitConfirm { .. } => render_quit_confirm(frame, app.comments.len()),
         Mode::Diff | Mode::Comments => {}
     }
+    if app.help {
+        let context = app.review_context();
+        bindings::render_help(
+            frame,
+            context.help_title(),
+            bindings::review_bindings(context),
+        );
+    }
 }
 
 fn render_comments(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -363,15 +415,28 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn footer_text(app: &App) -> String {
     let detail = app.status.clone().unwrap_or_else(|| {
-        app.selected_anchor()
-            .map(|anchor| format!("{}:{} [{}]", anchor.path, anchor.line, anchor.side.as_str()))
-            .unwrap_or_default()
+        if app.visible_view() == View::Diff {
+            app.selected_anchor()
+                .map(|anchor| format!("{}:{} [{}]", anchor.path, anchor.line, anchor.side.as_str()))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        }
     });
-    let inline_state = if app.inline_comments { "on" } else { "off" };
-    let controls = format!(
-        "s view: {} | v inline comments: {inline_state}",
-        app.diff_layout.as_str()
-    );
+    let controls = match app.visible_view() {
+        View::Diff => {
+            let inline_state = if app.inline_comments { "on" } else { "off" };
+            format!(
+                "s view: {} | v inline comments: {inline_state} | {}",
+                app.diff_layout.as_str(),
+                bindings::HELP_HINT
+            )
+        }
+        View::Comments => format!(
+            "l/Tab/Esc review | y export | q quit | {}",
+            bindings::HELP_HINT
+        ),
+    };
     if detail.is_empty() {
         controls
     } else {
