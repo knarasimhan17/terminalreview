@@ -1,4 +1,5 @@
 mod bindings;
+mod comment_input;
 mod diff_view;
 mod picker;
 mod review;
@@ -13,7 +14,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
@@ -353,14 +354,19 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     let [content, footer] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
 
-    match app.visible_view() {
+    let selected_row = match app.visible_view() {
         View::Diff => diff_view::render(frame, content, app),
-        View::Comments => render_comments(frame, content, app),
-    }
+        View::Comments => {
+            render_comments(frame, content, app);
+            None
+        }
+    };
     render_footer(frame, footer, app);
 
     match &app.mode {
-        Mode::CommentInput { body, .. } => render_comment_input(frame, body),
+        Mode::CommentInput { body, .. } => {
+            comment_input::render(frame, content, body, selected_row)
+        }
         Mode::QuitConfirm { .. } => render_quit_confirm(frame, app.comments.len()),
         Mode::Diff | Mode::Comments => {}
     }
@@ -444,32 +450,6 @@ fn footer_text(app: &App) -> String {
     }
 }
 
-fn render_comment_input(frame: &mut Frame<'_>, body: &str) {
-    // 72 columns keeps a long review comment visible without hiding the surrounding diff.
-    const MAX_WIDTH: u16 = 72;
-
-    let screen = frame.area();
-    let width = screen.width.saturating_sub(4).min(MAX_WIDTH);
-    let area = centered(screen, width, 3);
-    frame.render_widget(Clear, area);
-
-    let visible_width = usize::from(area.width.saturating_sub(2));
-    let body_width = UnicodeWidthStr::width(body);
-    let scroll = body_width.saturating_sub(visible_width.saturating_sub(1));
-    let horizontal_scroll = scroll.min(usize::from(u16::MAX)) as u16;
-    let input = Paragraph::new(body)
-        .block(Block::bordered().title(" Comment "))
-        .scroll((0, horizontal_scroll));
-    frame.render_widget(input, area);
-
-    if area.width > 2 && area.height > 2 {
-        let cursor_offset = body_width
-            .saturating_sub(scroll)
-            .min(visible_width.saturating_sub(1));
-        frame.set_cursor_position(Position::new(area.x + 1 + cursor_offset as u16, area.y + 1));
-    }
-}
-
 fn render_quit_confirm(frame: &mut Frame<'_>, comment_count: usize) {
     let suffix = if comment_count == 1 { "" } else { "s" };
     let prompt = format!("Discard {comment_count} unexported comment{suffix}? (y/N)");
@@ -486,7 +466,7 @@ fn render_quit_confirm(frame: &mut Frame<'_>, comment_count: usize) {
     );
 }
 
-fn centered(outer: Rect, width: u16, height: u16) -> Rect {
+pub(super) fn centered(outer: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(outer.width);
     let height = height.min(outer.height);
     Rect::new(

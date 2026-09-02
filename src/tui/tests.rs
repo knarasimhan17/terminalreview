@@ -1,9 +1,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 use crate::diff::ParsedDiff;
 use crate::model::Side;
 
-use super::{App, DiffLayout, DiffRow, Mode, footer_text};
+use super::{App, DiffLayout, DiffRow, Mode, footer_text, render};
 
 const TWO_FILE_DIFF: &str = "\
 diff --git first.rs first.rs
@@ -204,5 +206,72 @@ fn side_by_side_comments_follow_the_active_column() {
         app.selected_anchor().map(|anchor| anchor.side),
         Some(Side::New),
         "an addition must select the new column even after the old column was preferred"
+    );
+}
+
+#[test]
+fn comment_popup_opens_beside_the_selected_diff_line() {
+    let mut app = App::new(ParsedDiff::parse(
+        "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1,6 +1,6 @@
+ one
+ two
+ three
+-old
++new
+ four
+ five
+",
+    ));
+    let addition = app
+        .diff_rows()
+        .iter()
+        .position(|row| {
+            matches!(
+                row,
+                DiffRow::Line { file: 0, line } if app.diff.files[0].lines[*line].text == "new"
+            )
+        })
+        .expect("the fixture must contain the added line");
+    app.select_diff(addition);
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("commenting on an added line must open the input");
+    };
+    body.push_str("note");
+
+    let mut terminal = Terminal::new(TestBackend::new(72, 16)).expect("test terminal");
+    terminal
+        .draw(|frame| render(frame, &app))
+        .expect("review must render");
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_owned())
+                .collect::<String>()
+        })
+        .collect();
+    let line_y = rows
+        .iter()
+        .position(|row| row.contains("+new"))
+        .expect("the selected addition must be visible");
+    let popup_y = rows
+        .iter()
+        .position(|row| row.contains("Comment"))
+        .expect("the comment popup must be visible");
+    let centered_y = (buffer.area.height.saturating_sub(3)) / 2;
+
+    assert_eq!(
+        popup_y,
+        line_y + 1,
+        "the comment popup must sit on the row under the selected line, got {rows:?}"
+    );
+    assert_ne!(
+        popup_y as u16, centered_y,
+        "the comment popup must not open in the middle of the screen"
     );
 }

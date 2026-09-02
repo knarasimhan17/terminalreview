@@ -11,7 +11,7 @@ use crate::diff::{DiffFile, DiffLine, DiffLineKind};
 
 use super::{App, DiffLayout, DiffRow};
 
-pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
+pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) -> Option<Rect> {
     const HIGHLIGHT_SYMBOL: &str = "> ";
 
     let block = Block::bordered().title(format!(
@@ -19,8 +19,9 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         app.diff_layout.as_str(),
         app.comments.len()
     ));
-    let line_width = usize::from(block.inner(area).width)
-        .saturating_sub(UnicodeWidthStr::width(HIGHLIGHT_SYMBOL));
+    let inner = block.inner(area);
+    let line_width =
+        usize::from(inner.width).saturating_sub(UnicodeWidthStr::width(HIGHLIGHT_SYMBOL));
     let rows = app.diff_rows();
     let items = if rows.is_empty() {
         vec![ListItem::new("No changes to review.")]
@@ -48,6 +49,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
             })
             .collect::<Vec<_>>()
     };
+    let item_heights: Vec<u16> = items.iter().map(|item| item.height() as u16).collect();
     let list = List::new(items)
         .block(block)
         .highlight_symbol(HIGHLIGHT_SYMBOL);
@@ -65,6 +67,39 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         state.select(Some(app.selected_diff));
     }
     frame.render_stateful_widget(list, area, &mut state);
+    selected_line_rect(inner, &item_heights, app.selected_diff, state.offset())
+}
+
+pub(super) fn selected_line_rect(
+    list_area: Rect,
+    heights: &[u16],
+    selected: usize,
+    offset: usize,
+) -> Option<Rect> {
+    if list_area.height == 0 || selected < offset || selected >= heights.len() {
+        return None;
+    }
+
+    let mut y = list_area.y;
+    for (index, height) in heights.iter().copied().enumerate().skip(offset) {
+        if y >= list_area.bottom() {
+            return None;
+        }
+        if index == selected {
+            let visible = 1u16.min(height).min(list_area.bottom().saturating_sub(y));
+            if visible == 0 {
+                return None;
+            }
+            return Some(Rect {
+                x: list_area.x,
+                y,
+                width: list_area.width,
+                height: visible,
+            });
+        }
+        y = y.saturating_add(height);
+    }
+    None
 }
 
 fn file_header(file: &DiffFile, width: usize, collapsed: bool) -> Line<'static> {
@@ -139,7 +174,7 @@ fn display_text(line: &DiffLine) -> String {
     }
 }
 
-fn wrap_comment_body(body: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap_comment_body(body: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut rows = Vec::new();
 
@@ -203,7 +238,8 @@ mod tests {
     use crate::diff::{DiffLineKind, ParsedDiff};
 
     use super::super::Mode;
-    use super::{App, item_lines, wrap_comment_body};
+    use super::{App, item_lines, selected_line_rect, wrap_comment_body};
+    use ratatui::layout::Rect;
 
     // Ten body columns force both word-boundary and hard-word wrapping.
     const NARROW_WIDTH: usize = 12;
@@ -263,6 +299,24 @@ diff --git a/src/lib.rs b/src/lib.rs
             hidden,
             ["●           1 +new"],
             "hiding inline bodies must retain the gutter marker"
+        );
+    }
+
+    #[test]
+    fn selected_line_rect_uses_the_first_visible_row_of_the_item() {
+        let area = Rect::new(1, 2, 40, 10);
+        let selected = selected_line_rect(area, &[1, 3, 1], 1, 0)
+            .expect("the selected item must be on screen");
+
+        assert_eq!(
+            selected,
+            Rect::new(1, 3, 40, 1),
+            "the popup anchor must be the code row, not the full multi-line item"
+        );
+        assert_eq!(
+            selected_line_rect(area, &[1, 3, 1], 1, 2),
+            None,
+            "a selected item scrolled above the viewport must not produce an anchor"
         );
     }
 }
