@@ -106,6 +106,7 @@ impl DiffFile {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ParsedDiff {
     pub(crate) files: Vec<DiffFile>,
 }

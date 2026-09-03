@@ -12,9 +12,14 @@ and branch. `trv` stores the revision metadata and an exact Git snapshot of the
 reviewed code inside the repository's `.git` directory. The review data does not
 modify tracked worktree files and is not included in ordinary branch pushes.
 
-Revisions are numbered in export order. Creating rev-2 never changes rev-1, so
-earlier reviews remain available for browsing with the code and comments that
-belonged to them.
+Revisions are numbered in export order. A revision is created only when you
+export a review you actually opened. Unreviewed agent edits do not mint a new
+rev; the next time you review, that latest tree becomes the next round.
+
+Creating rev-2 never changes rev-1. The default view is the current tree with
+a clean comment set. Press `r` to open a saved revision (with its comments) or
+to compare the current tree against the last review. New comments attach only
+to the current round.
 
 ## Install
 
@@ -68,9 +73,10 @@ Inside a review, use `j`/`k` or the up/down arrows to move between lines, or
 click a line with the mouse. The scroll wheel also moves the selection. Use
 `]`/`[` to move between files, `g`/`G` to jump to the first or last line, `c`
 to add a comment, click an existing comment to edit it, `d` to delete the
-comment on the selected line, `l` to view comments, `s` to toggle unified or
-side-by-side layout, `v` to show or hide inline comment rows, `y` to export,
-`?` to show context-aware help, and `q` to quit. While editing, `Enter` saves,
+comment on the selected line, `l` to view comments, `r` to switch between the
+current review, the interdiff since the last revision, and frozen revisions,
+`s` to toggle unified or side-by-side layout, `v` to show or hide inline
+comment rows, `y` to export, `?` to show context-aware help, and `q` to quit. While editing, `Enter` saves,
 `Esc` cancels, and `Ctrl-D` or an empty `Enter` deletes the comment. In the
 comment list, `c`/`Enter` edits and `d` deletes. Press `?`, `Esc`, or `q` to close help and
 return to the same screen. Unified layout is the default. In side-by-side

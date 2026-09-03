@@ -229,6 +229,18 @@ impl Repository {
         Ok((base_commit_sha, tree_sha))
     }
 
+    pub(crate) fn commit_tree_sha(&self, commit: &str) -> Result<String> {
+        let expression = format!("{commit}^{{tree}}");
+        git_text(
+            &self.root,
+            &["rev-parse", "--verify", &expression],
+            None,
+            None,
+            false,
+        )
+        .with_context(|| format!("failed to resolve tree for {commit}"))
+    }
+
     fn resolve_commit(&self, revision: &str) -> Result<String> {
         let expression = format!("{revision}^{{commit}}");
         git_text(
@@ -241,7 +253,7 @@ impl Repository {
         .with_context(|| format!("failed to resolve commit {revision}"))
     }
 
-    fn diff_trees(&self, base_commit_sha: &str, tree_sha: &str) -> Result<String> {
+    pub(crate) fn diff_trees(&self, base_commit_sha: &str, tree_sha: &str) -> Result<String> {
         let bytes = git_bytes(
             &self.root,
             &[

@@ -21,9 +21,11 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
+use unicode_width::UnicodeWidthStr;
 
 use crate::diff::{LineAnchor, ParsedDiff, SideBySideRow};
 use crate::model::{Comment, Side};
+use crate::session::{ReviewSession, ViewKind};
 
 pub(crate) use picker::{CommitPickerOutcome, ReviewTarget, run as run_picker};
 
@@ -69,6 +71,10 @@ impl DiffLayout {
 }
 
 struct App {
+    session: ReviewSession,
+    viewing: ViewKind,
+    read_only: bool,
+    rev_picker: Option<usize>,
     diff: ParsedDiff,
     collapsed_files: Vec<bool>,
     comments: Vec<Comment>,
@@ -100,10 +106,18 @@ enum DiffRow {
 
 impl App {
     fn new(diff: ParsedDiff) -> Self {
-        let collapsed_files = vec![false; diff.files.len()];
-        Self {
-            diff,
-            collapsed_files,
+        Self::from_session(ReviewSession::live_only(diff))
+    }
+
+    fn from_session(session: ReviewSession) -> Self {
+        let viewing = session.initial;
+        let mut app = Self {
+            session,
+            viewing,
+            read_only: false,
+            rev_picker: None,
+            diff: ParsedDiff::parse(""),
+            collapsed_files: Vec::new(),
             comments: Vec::new(),
             selected_diff: 0,
             selected_side: Side::New,
@@ -114,7 +128,127 @@ impl App {
             status: None,
             help: false,
             diff_list: DiffListLayout::default(),
+        };
+        app.load_view();
+        app
+    }
+
+    fn stash_live_comments(&mut self) {
+        if !self.read_only
+            && let Some(live) = &mut self.session.live
+        {
+            live.comments = self.comments.clone();
         }
+    }
+
+    fn load_view(&mut self) {
+        self.stash_live_comments();
+        match self.viewing {
+            ViewKind::LiveMain => {
+                let live = self
+                    .session
+                    .live
+                    .as_ref()
+                    .expect("live main view requires a current review");
+                self.diff = live.vs_main.clone();
+                self.comments = live.comments.clone();
+                self.read_only = false;
+            }
+            ViewKind::LiveSince(rev) => {
+                let live = self
+                    .session
+                    .live
+                    .as_ref()
+                    .expect("interdiff view requires a current review");
+                let diff = live
+                    .vs_previous
+                    .as_ref()
+                    .and_then(|(previous, diff)| (*previous == rev).then_some(diff.clone()))
+                    .expect("interdiff view requires the previous revision diff");
+                self.diff = diff;
+                self.comments = Vec::new();
+                self.read_only = true;
+            }
+            ViewKind::Frozen(rev) => {
+                let frozen = self
+                    .session
+                    .frozen
+                    .iter()
+                    .find(|revision| revision.rev == rev)
+                    .expect("frozen view requires a stored revision");
+                self.diff = frozen.diff.clone();
+                self.comments = frozen.comments.clone();
+                self.read_only = true;
+            }
+        }
+        self.collapsed_files = vec![false; self.diff.files.len()];
+        self.selected_diff = 0;
+        self.selected_side = Side::New;
+        self.selected_comment = 0;
+        self.diff_list = DiffListLayout::default();
+        self.mode = Mode::Diff;
+        self.rev_picker = None;
+    }
+
+    fn view_label(&self) -> String {
+        match self.viewing {
+            ViewKind::LiveMain => format!("rev-{} draft", self.session.next_rev()),
+            ViewKind::LiveSince(rev) => format!("current vs rev-{rev}"),
+            ViewKind::Frozen(rev) => format!("rev-{rev}"),
+        }
+    }
+
+    fn pending_comments(&self) -> usize {
+        match self.viewing {
+            ViewKind::LiveMain => self.comments.len(),
+            _ => self
+                .session
+                .live
+                .as_ref()
+                .map(|live| live.comments.len())
+                .unwrap_or(0),
+        }
+    }
+
+    fn ensure_writable(&mut self) -> bool {
+        if self.read_only {
+            self.status = Some(format!("{} is read-only.", self.view_label()));
+            false
+        } else {
+            true
+        }
+    }
+
+    fn revision_choices(&self) -> Vec<(ViewKind, String)> {
+        let mut choices = Vec::new();
+        if self.session.live.is_some() {
+            choices.push((
+                ViewKind::LiveMain,
+                format!(
+                    "current vs mainline (rev-{} draft)",
+                    self.session.next_rev()
+                ),
+            ));
+            if let Some((rev, _)) = self
+                .session
+                .live
+                .as_ref()
+                .and_then(|live| live.vs_previous.as_ref())
+            {
+                choices.push((ViewKind::LiveSince(*rev), format!("current vs rev-{rev}")));
+            }
+        }
+        for revision in self.session.frozen.iter().rev() {
+            choices.push((
+                ViewKind::Frozen(revision.rev),
+                format!(
+                    "rev-{} ({} comments)",
+                    revision.rev,
+                    revision.comments.len()
+                ),
+            ));
+        }
+        choices
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<ReviewOutcome> {
@@ -125,6 +259,10 @@ impl App {
             if bindings::closes_help(&key) {
                 self.help = false;
             }
+            return None;
+        }
+        if self.rev_picker.is_some() {
+            self.handle_rev_picker_key(key);
             return None;
         }
 
@@ -150,8 +288,58 @@ impl App {
         }
     }
 
+    fn open_rev_picker(&mut self) {
+        let choices = self.revision_choices();
+        if choices.is_empty() {
+            self.status = Some("No saved revisions.".to_owned());
+            return;
+        }
+        let selected = choices
+            .iter()
+            .position(|(kind, _)| *kind == self.viewing)
+            .unwrap_or(0);
+        self.rev_picker = Some(selected);
+        self.status = None;
+    }
+
+    fn handle_rev_picker_key(&mut self, key: KeyEvent) {
+        let Some(mut selected) = self.rev_picker else {
+            return;
+        };
+        let choices = self.revision_choices();
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if selected + 1 < choices.len() {
+                    selected += 1;
+                }
+                self.rev_picker = Some(selected);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+                self.rev_picker = Some(selected);
+            }
+            KeyCode::Enter => {
+                self.viewing = choices[selected].0;
+                self.load_view();
+                self.status = Some(format!("Viewing {}.", self.view_label()));
+            }
+            KeyCode::Char('r') | KeyCode::Esc | KeyCode::Char('q') => {
+                self.rev_picker = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn export_comments(&mut self) -> Option<ReviewOutcome> {
+        if !self.ensure_writable() {
+            return None;
+        }
+        self.stash_live_comments();
+        Some(ReviewOutcome::Export(self.comments.clone()))
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if self.help || !matches!(self.mode, Mode::Diff) {
+        if self.help || self.rev_picker.is_some() || !matches!(self.mode, Mode::Diff) {
             return;
         }
         match mouse.kind {
@@ -189,6 +377,7 @@ impl App {
             bindings::ReviewAction::AddComment => self.start_comment(),
             bindings::ReviewAction::EditComment => self.edit_selected_comment(),
             bindings::ReviewAction::DeleteComment => self.delete_selected_line_comment(),
+            bindings::ReviewAction::OpenRevisions => self.open_rev_picker(),
             bindings::ReviewAction::OpenComments => self.mode = Mode::Comments,
             bindings::ReviewAction::ToggleLayout => self.toggle_diff_layout(),
             bindings::ReviewAction::ToggleInlineComments => {
@@ -200,9 +389,7 @@ impl App {
                 };
                 self.status = Some(format!("Inline comments {state}."));
             }
-            bindings::ReviewAction::Export => {
-                return Some(ReviewOutcome::Export(self.comments.clone()));
-            }
+            bindings::ReviewAction::Export => return self.export_comments(),
             bindings::ReviewAction::Quit => return self.request_quit(),
             bindings::ReviewAction::Help => self.help = true,
             bindings::ReviewAction::ReturnToDiff => {
@@ -231,6 +418,7 @@ impl App {
                 self.selected_comment = self.comments.len().saturating_sub(1);
             }
             bindings::ReviewAction::ReturnToDiff => self.mode = Mode::Diff,
+            bindings::ReviewAction::OpenRevisions => self.open_rev_picker(),
             bindings::ReviewAction::EditComment => self.edit_selected_comment(),
             bindings::ReviewAction::DeleteComment => {
                 if !self.comments.is_empty() {
@@ -240,9 +428,7 @@ impl App {
                     }
                 }
             }
-            bindings::ReviewAction::Export => {
-                return Some(ReviewOutcome::Export(self.comments.clone()));
-            }
+            bindings::ReviewAction::Export => return self.export_comments(),
             bindings::ReviewAction::Quit => return self.request_quit(),
             bindings::ReviewAction::Help => self.help = true,
             bindings::ReviewAction::NextFile
@@ -350,8 +536,8 @@ impl App {
     }
 }
 
-pub(crate) fn run(diff: ParsedDiff) -> Result<ReviewOutcome> {
-    with_terminal(|terminal| run_review(terminal, diff))
+pub(crate) fn run(session: ReviewSession) -> Result<ReviewOutcome> {
+    with_terminal(|terminal| run_review(terminal, session))
 }
 
 fn with_terminal<T>(operation: impl FnOnce(&mut TrvTerminal) -> Result<T>) -> Result<T> {
@@ -362,8 +548,8 @@ fn with_terminal<T>(operation: impl FnOnce(&mut TrvTerminal) -> Result<T>) -> Re
     operation(&mut terminal)
 }
 
-fn run_review(terminal: &mut TrvTerminal, diff: ParsedDiff) -> Result<ReviewOutcome> {
-    let mut app = App::new(diff);
+fn run_review(terminal: &mut TrvTerminal, session: ReviewSession) -> Result<ReviewOutcome> {
+    let mut app = App::from_session(session);
 
     loop {
         terminal
@@ -448,7 +634,7 @@ fn render(frame: &mut Frame<'_>, app: &mut App) {
         Mode::CommentInput { body, existing, .. } => {
             comment_input::render(frame, content, body, selected_row, existing.is_some())
         }
-        Mode::QuitConfirm { .. } => render_quit_confirm(frame, app.comments.len()),
+        Mode::QuitConfirm { .. } => render_quit_confirm(frame, app.pending_comments()),
         Mode::Diff | Mode::Comments => {}
     }
     if app.help {
@@ -458,6 +644,9 @@ fn render(frame: &mut Frame<'_>, app: &mut App) {
             context.help_title(),
             bindings::review_bindings(context),
         );
+    }
+    if app.rev_picker.is_some() {
+        render_rev_picker(frame, app);
     }
 }
 
@@ -514,7 +703,8 @@ fn footer_text(app: &App) -> String {
         View::Diff => {
             let inline_state = if app.inline_comments { "on" } else { "off" };
             format!(
-                "s view: {} | v inline comments: {inline_state} | {}",
+                "r revs | {} | s view: {} | v inline comments: {inline_state} | {}",
+                app.view_label(),
                 app.diff_layout.as_str(),
                 bindings::HELP_HINT
             )
@@ -529,6 +719,42 @@ fn footer_text(app: &App) -> String {
     } else {
         format!("{controls} | {detail}")
     }
+}
+
+fn render_rev_picker(frame: &mut Frame<'_>, app: &App) {
+    let choices = app.revision_choices();
+    let selected = app.rev_picker.unwrap_or(0);
+    let width = choices
+        .iter()
+        .map(|(_, label)| UnicodeWidthStr::width(label.as_str()))
+        .max()
+        .unwrap_or(0)
+        .saturating_add(6)
+        .max(24)
+        .min(usize::from(frame.area().width)) as u16;
+    let height = (choices.len() + 2).min(usize::from(frame.area().height)) as u16;
+    let area = centered(frame.area(), width, height);
+    let items = choices
+        .into_iter()
+        .map(|(_, label)| ListItem::new(format!(" {label}")))
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !items.is_empty() {
+        state.select(Some(selected));
+    }
+    frame.render_widget(Clear, area);
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(Block::bordered().title(" Revisions | Enter select | r close "))
+            .highlight_symbol("> ")
+            .highlight_style(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        area,
+        &mut state,
+    );
 }
 
 fn render_quit_confirm(frame: &mut Frame<'_>, comment_count: usize) {
