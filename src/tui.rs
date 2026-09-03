@@ -27,7 +27,7 @@ use crate::diff::{LineAnchor, ParsedDiff, SideBySideRow};
 use crate::model::{Comment, Side};
 use crate::session::{ReviewSession, ViewKind};
 
-pub(crate) use picker::{CommitPickerOutcome, ReviewTarget, run as run_picker};
+pub(crate) use picker::{CommitPickerOutcome, run as run_picker};
 
 type TrvTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
