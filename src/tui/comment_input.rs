@@ -17,12 +17,23 @@ struct CommentInputLayout {
     cursor: Position,
 }
 
-pub(super) fn render(frame: &mut Frame<'_>, bounds: Rect, body: &str, selected_row: Option<Rect>) {
+pub(super) fn render(
+    frame: &mut Frame<'_>,
+    bounds: Rect,
+    body: &str,
+    selected_row: Option<Rect>,
+    editing: bool,
+) {
     let layout = layout_comment_input(bounds, body, selected_row);
+    let title = if editing {
+        " Edit comment "
+    } else {
+        " Comment "
+    };
     frame.render_widget(Clear, layout.area);
     frame.render_widget(
         Paragraph::new(layout.text)
-            .block(Block::bordered().title(" Comment "))
+            .block(Block::bordered().title(title))
             .scroll((layout.scroll, 0)),
         layout.area,
     );
@@ -176,7 +187,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
         let body = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
         terminal
-            .draw(|frame| render(frame, frame.area(), body, None))
+            .draw(|frame| render(frame, frame.area(), body, None, false))
             .expect("comment input must render");
 
         let buffer = terminal.backend().buffer();

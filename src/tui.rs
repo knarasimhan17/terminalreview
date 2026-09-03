@@ -43,8 +43,14 @@ enum View {
 enum Mode {
     Diff,
     Comments,
-    CommentInput { anchor: LineAnchor, body: String },
-    QuitConfirm { previous: View },
+    CommentInput {
+        anchor: LineAnchor,
+        body: String,
+        existing: Option<usize>,
+    },
+    QuitConfirm {
+        previous: View,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +88,7 @@ struct DiffListLayout {
     inner: Rect,
     offset: usize,
     heights: Vec<u16>,
+    line_width: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +135,11 @@ impl App {
         } else if matches!(self.mode, Mode::CommentInput { .. }) {
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 self.request_quit()
+            } else if key.code == KeyCode::Char('d')
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                self.delete_open_comment();
+                None
             } else {
                 self.handle_input_key(key)
             }
@@ -175,6 +187,8 @@ impl App {
                 }
             }
             bindings::ReviewAction::AddComment => self.start_comment(),
+            bindings::ReviewAction::EditComment => self.edit_selected_comment(),
+            bindings::ReviewAction::DeleteComment => self.delete_selected_line_comment(),
             bindings::ReviewAction::OpenComments => self.mode = Mode::Comments,
             bindings::ReviewAction::ToggleLayout => self.toggle_diff_layout(),
             bindings::ReviewAction::ToggleInlineComments => {
@@ -217,6 +231,15 @@ impl App {
                 self.selected_comment = self.comments.len().saturating_sub(1);
             }
             bindings::ReviewAction::ReturnToDiff => self.mode = Mode::Diff,
+            bindings::ReviewAction::EditComment => self.edit_selected_comment(),
+            bindings::ReviewAction::DeleteComment => {
+                if !self.comments.is_empty() {
+                    self.delete_comment(self.selected_comment);
+                    if self.comments.is_empty() {
+                        self.mode = Mode::Diff;
+                    }
+                }
+            }
             bindings::ReviewAction::Export => {
                 return Some(ReviewOutcome::Export(self.comments.clone()));
             }
@@ -261,17 +284,37 @@ impl App {
             }
             KeyCode::Enter => {
                 let mode = std::mem::replace(&mut self.mode, Mode::Diff);
-                let Mode::CommentInput { anchor, body } = mode else {
+                let Mode::CommentInput {
+                    anchor,
+                    body,
+                    existing,
+                } = mode
+                else {
                     unreachable!("input handling requires comment-input mode");
                 };
                 let body = body.trim().to_owned();
-                if body.is_empty() {
-                    self.status = Some("Empty comment ignored.".to_owned());
-                } else {
-                    self.comments
-                        .push(Comment::open(anchor.path, anchor.line, anchor.side, body));
-                    self.selected_comment = self.comments.len().saturating_sub(1);
-                    self.status = Some("Comment added.".to_owned());
+                match existing {
+                    Some(index) if body.is_empty() => self.delete_comment(index),
+                    Some(index) => {
+                        if let Some(comment) = self.comments.get_mut(index) {
+                            comment.body = body;
+                            self.selected_comment = index;
+                            self.status = Some("Comment updated.".to_owned());
+                        }
+                    }
+                    None if body.is_empty() => {
+                        self.status = Some("Empty comment ignored.".to_owned());
+                    }
+                    None => {
+                        self.comments.push(Comment::open(
+                            anchor.path,
+                            anchor.line,
+                            anchor.side,
+                            body,
+                        ));
+                        self.selected_comment = self.comments.len().saturating_sub(1);
+                        self.status = Some("Comment added.".to_owned());
+                    }
                 }
             }
             KeyCode::Char(character)
@@ -402,8 +445,8 @@ fn render(frame: &mut Frame<'_>, app: &mut App) {
     render_footer(frame, footer, app);
 
     match &app.mode {
-        Mode::CommentInput { body, .. } => {
-            comment_input::render(frame, content, body, selected_row)
+        Mode::CommentInput { body, existing, .. } => {
+            comment_input::render(frame, content, body, selected_row, existing.is_some())
         }
         Mode::QuitConfirm { .. } => render_quit_confirm(frame, app.comments.len()),
         Mode::Diff | Mode::Comments => {}

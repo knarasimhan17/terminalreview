@@ -536,6 +536,238 @@ diff --git file.rs file.rs
 }
 
 #[test]
+fn clicking_an_inline_comment_opens_it_for_editing() {
+    let mut app = App::new(ParsedDiff::parse(
+        "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-old
++new
+",
+    ));
+    let addition = app
+        .diff_rows()
+        .iter()
+        .position(|row| {
+            matches!(
+                row,
+                DiffRow::Line { file: 0, line } if app.diff.files[0].lines[*line].text == "new"
+            )
+        })
+        .expect("the fixture must contain an added line");
+    app.select_diff(addition);
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("commenting on an added line must open the input");
+    };
+    body.push_str("first note");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let mut terminal = Terminal::new(TestBackend::new(72, 16)).expect("test terminal");
+    terminal
+        .draw(|frame| render(frame, &mut app))
+        .expect("review must render");
+    let rows = buffer_rows(terminal.backend().buffer());
+    let comment_y = rows
+        .iter()
+        .position(|row| row.contains("first note"))
+        .expect("the inline comment must be visible") as u16;
+
+    app.handle_mouse(click(12, comment_y));
+    let Mode::CommentInput { body, existing, .. } = &app.mode else {
+        panic!(
+            "clicking the inline comment must open the editor, got {:?}",
+            rows
+        );
+    };
+    assert_eq!(body, "first note");
+    assert_eq!(*existing, Some(0));
+}
+
+#[test]
+fn editing_a_comment_replaces_it_instead_of_adding_another() {
+    let mut app = App::new(ParsedDiff::parse(
+        "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-old
++new
+",
+    ));
+    app.select_diff(2);
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("must open comment input");
+    };
+    body.push_str("old note");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.edit_comment(0);
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("edit must reopen the comment");
+    };
+    body.clear();
+    body.push_str("new note");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.comments
+            .iter()
+            .map(|comment| comment.body.as_str())
+            .collect::<Vec<_>>(),
+        ["new note"],
+        "saving an edit must replace the existing comment"
+    );
+}
+
+#[test]
+fn ctrl_d_and_empty_enter_delete_the_open_comment() {
+    let mut app = App::new(ParsedDiff::parse(
+        "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-old
++new
+",
+    ));
+    app.select_diff(2);
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("must open comment input");
+    };
+    body.push_str("remove me");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.edit_comment(0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert!(
+        app.comments.is_empty(),
+        "Ctrl-D must delete the comment being edited"
+    );
+    assert!(matches!(app.mode, Mode::Diff));
+
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("must open comment input");
+    };
+    body.push_str("remove later");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.edit_comment(0);
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("edit must reopen the comment");
+    };
+    body.clear();
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        app.comments.is_empty(),
+        "saving an empty edit must delete the comment"
+    );
+}
+
+#[test]
+fn clicking_the_code_line_does_not_edit_its_comment() {
+    let mut app = App::new(ParsedDiff::parse(
+        "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-old
++new
+",
+    ));
+    app.select_diff(3);
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("must open comment input");
+    };
+    body.push_str("keep");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let mut terminal = Terminal::new(TestBackend::new(72, 16)).expect("test terminal");
+    terminal
+        .draw(|frame| render(frame, &mut app))
+        .expect("review must render");
+    let rows = buffer_rows(terminal.backend().buffer());
+    let line_y = rows
+        .iter()
+        .position(|row| row.contains("+new"))
+        .expect("the added line must be visible") as u16;
+
+    app.handle_mouse(click(8, line_y));
+    assert!(
+        matches!(app.mode, Mode::Diff),
+        "clicking the code row must select it without opening the editor"
+    );
+}
+
+#[test]
+fn comment_list_can_edit_and_delete_the_selected_comment() {
+    let mut app = App::new(ParsedDiff::parse(
+        "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-old
++new
+",
+    ));
+    app.select_diff(2);
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("must open comment input");
+    };
+    body.push_str("listed");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.mode = Mode::Comments;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+    let Mode::CommentInput { body, existing, .. } = &app.mode else {
+        panic!("c in the comment list must edit the selected comment");
+    };
+    assert_eq!(body, "listed");
+    assert_eq!(*existing, Some(0));
+
+    app.mode = Mode::Comments;
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(
+        app.comments.is_empty(),
+        "d in the comment list must delete the selected comment"
+    );
+}
+
+#[test]
+fn d_deletes_the_comment_on_the_selected_diff_line() {
+    let mut app = App::new(ParsedDiff::parse(
+        "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-old
++new
+",
+    ));
+    app.select_diff(3);
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("must open comment input");
+    };
+    body.push_str("gone");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(
+        app.comments.is_empty(),
+        "d on a commented diff line must delete that comment"
+    );
+}
+
+#[test]
 fn mouse_scroll_moves_the_diff_selection() {
     let mut app = App::new(ParsedDiff::parse(TWO_FILE_DIFF));
     app.handle_mouse(MouseEvent {

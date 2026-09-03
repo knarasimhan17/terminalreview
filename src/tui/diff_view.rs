@@ -13,6 +13,7 @@ use crate::model::Side;
 use super::{App, DiffLayout, DiffRow};
 
 pub(super) const HIGHLIGHT_SYMBOL: &str = "> ";
+pub(super) const COMMENT_PREFIX: &str = "┃ ";
 
 pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
     let block = Block::bordered().title(format!(
@@ -71,6 +72,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option
     app.diff_list.inner = inner;
     app.diff_list.offset = state.offset();
     app.diff_list.heights = item_heights;
+    app.diff_list.line_width = line_width;
     selected_line_rect(
         inner,
         &app.diff_list.heights,
@@ -105,6 +107,123 @@ pub(super) fn item_index_at(
 
 pub(super) fn side_at_column(list_area: Rect, column: u16) -> Side {
     side_by_side::side_at_column(list_area, column)
+}
+
+pub(super) fn item_top(
+    list_area: Rect,
+    heights: &[u16],
+    offset: usize,
+    index: usize,
+) -> Option<u16> {
+    if list_area.height == 0 || index < offset || index >= heights.len() {
+        return None;
+    }
+    let mut y = list_area.y;
+    for (item, height) in heights.iter().copied().enumerate().skip(offset) {
+        if y >= list_area.bottom() {
+            return None;
+        }
+        if item == index {
+            return Some(y);
+        }
+        y = y.saturating_add(height);
+    }
+    None
+}
+
+pub(super) fn comment_index_at(app: &App, column: u16, row: u16) -> Option<usize> {
+    if !app.inline_comments {
+        return None;
+    }
+    let index = item_index_at(
+        app.diff_list.inner,
+        &app.diff_list.heights,
+        app.diff_list.offset,
+        row,
+    )?;
+    let top = item_top(
+        app.diff_list.inner,
+        &app.diff_list.heights,
+        app.diff_list.offset,
+        index,
+    )?;
+    let local = usize::from(row.saturating_sub(top));
+    if local == 0 {
+        return None;
+    }
+    let diff_row = *app.diff_rows().get(index)?;
+    match diff_row {
+        DiffRow::File(_) => None,
+        DiffRow::Line { file, line } => comment_at_unified_offset(app, file, line, local),
+        DiffRow::SideBySide { file, row } => comment_at_side_offset(
+            app,
+            file,
+            row,
+            side_at_column(app.diff_list.inner, column),
+            local,
+        ),
+    }
+}
+
+fn comment_at_unified_offset(app: &App, file: usize, line: usize, local: usize) -> Option<usize> {
+    let line = app.diff.files.get(file)?.lines.get(line)?;
+    let body_width = app
+        .diff_list
+        .line_width
+        .saturating_sub(UnicodeWidthStr::width(COMMENT_PREFIX))
+        .max(1);
+    comment_at_wrapped_offset(
+        app.comment_indices_for_line(line),
+        app,
+        body_width,
+        local - 1,
+    )
+}
+
+fn comment_at_side_offset(
+    app: &App,
+    file: usize,
+    row: crate::diff::SideBySideRow,
+    side: Side,
+    local: usize,
+) -> Option<usize> {
+    let line = match side {
+        Side::Old => row.old_line(),
+        Side::New => row.new_line(),
+    }?;
+    let file = app.diff.files.get(file)?;
+    let (left, right, _) = side_by_side::column_widths(app.diff_list.line_width);
+    let width = match side {
+        Side::Old => left,
+        Side::New => right,
+    };
+    let body_width = width
+        .saturating_sub(UnicodeWidthStr::width(COMMENT_PREFIX))
+        .max(1);
+    comment_at_wrapped_offset(
+        app.comment_indices_for_anchor(file.lines.get(line)?.anchor_on(side)),
+        app,
+        body_width,
+        local - 1,
+    )
+}
+
+fn comment_at_wrapped_offset(
+    indices: impl Iterator<Item = usize>,
+    app: &App,
+    body_width: usize,
+    mut remaining: usize,
+) -> Option<usize> {
+    for index in indices {
+        let wraps = wrap_comment_body(&app.comments.get(index)?.body, body_width)
+            .len()
+            .max(1);
+        if remaining < wraps {
+            return Some(index);
+        }
+        remaining -= wraps;
+    }
+    None
 }
 
 pub(super) fn selected_line_rect(
@@ -165,8 +284,6 @@ fn file_header(file: &DiffFile, width: usize, collapsed: bool) -> Line<'static> 
 }
 
 fn item_lines(app: &App, line: &DiffLine, width: usize) -> Vec<Line<'static>> {
-    const COMMENT_PREFIX: &str = "┃ ";
-
     let comments = app.comments_for_line(line).collect::<Vec<_>>();
     let marker = if comments.is_empty() { " " } else { "●" };
     let old_line = line

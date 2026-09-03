@@ -9,7 +9,8 @@ use crate::model::Side;
 use super::super::App;
 use super::{display_text, line_style, wrap_comment_body};
 
-const COMMENT_PREFIX: &str = "┃ ";
+use super::COMMENT_PREFIX;
+
 const DIVIDER: &str = "│";
 
 pub(super) fn item_lines(
@@ -163,7 +164,7 @@ fn split_line(left: Span<'static>, right: Span<'static>, divider: bool) -> Line<
     Line::from(spans)
 }
 
-fn column_widths(width: usize) -> (usize, usize, bool) {
+pub(super) fn column_widths(width: usize) -> (usize, usize, bool) {
     let divider = width > 0;
     let content_width = width.saturating_sub(usize::from(divider));
     let left = content_width / 2;
