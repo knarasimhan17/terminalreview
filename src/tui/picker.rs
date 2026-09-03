@@ -13,12 +13,10 @@ use crate::session::ReviewSession;
 
 use super::{ReviewOutcome, TrvTerminal, bindings, run_review, with_terminal};
 
-pub(crate) enum ReviewTarget {
-    WorkingTree,
-    CommitRange {
-        base_sha: String,
-        source_sha: String,
-    },
+#[derive(Debug)]
+pub(crate) struct ReviewTarget {
+    pub(crate) base_sha: String,
+    pub(crate) source_sha: String,
 }
 
 pub(crate) enum CommitPickerOutcome {
@@ -26,13 +24,12 @@ pub(crate) enum CommitPickerOutcome {
         prepared: PreparedReview,
         outcome: ReviewOutcome,
     },
-    NoChanges,
     Quit,
 }
 
+#[derive(Debug)]
 enum PickerChoice {
     Review(ReviewTarget),
-    NoChanges,
     Quit,
 }
 
@@ -44,17 +41,15 @@ enum PickerStep {
 
 struct CommitPicker {
     commits: Vec<CommitLogEntry>,
-    working_tree_clean: bool,
     step: PickerStep,
     now: DateTime<Utc>,
     help: bool,
 }
 
 impl CommitPicker {
-    fn new(commits: Vec<CommitLogEntry>, working_tree_clean: bool) -> Self {
+    fn new(commits: Vec<CommitLogEntry>) -> Self {
         Self {
             commits,
-            working_tree_clean,
             step: PickerStep::Source { selected: 0 },
             now: Utc::now(),
             help: false,
@@ -106,24 +101,20 @@ impl CommitPicker {
 
     fn select(&mut self) -> Option<PickerChoice> {
         match self.step {
-            PickerStep::Source { selected: 0 } if self.working_tree_clean => {
-                Some(PickerChoice::NoChanges)
-            }
-            PickerStep::Source { selected: 0 } => {
-                Some(PickerChoice::Review(ReviewTarget::WorkingTree))
-            }
             PickerStep::Source { selected } => {
-                let source = selected - 1;
                 let commit = self
                     .commits
-                    .get(source)
+                    .get(selected)
                     .expect("source picker index must be bounded by the commit list");
-                let selected = commit
+                let base = commit
                     .first_parent_sha
                     .as_deref()
                     .and_then(|parent| self.commits.iter().position(|commit| commit.sha == parent))
-                    .unwrap_or(source);
-                self.step = PickerStep::Base { source, selected };
+                    .unwrap_or(selected);
+                self.step = PickerStep::Base {
+                    source: selected,
+                    selected: base,
+                };
                 None
             }
             PickerStep::Base { source, selected } => {
@@ -135,7 +126,7 @@ impl CommitPicker {
                     .commits
                     .get(selected)
                     .expect("base picker selection must be bounded by the commit list");
-                Some(PickerChoice::Review(ReviewTarget::CommitRange {
+                Some(PickerChoice::Review(ReviewTarget {
                     base_sha: base.sha.clone(),
                     source_sha: source.sha.clone(),
                 }))
@@ -147,19 +138,14 @@ impl CommitPicker {
         match self.step {
             PickerStep::Source { .. } => Some(PickerChoice::Quit),
             PickerStep::Base { source, .. } => {
-                self.step = PickerStep::Source {
-                    selected: source + 1,
-                };
+                self.step = PickerStep::Source { selected: source };
                 None
             }
         }
     }
 
     fn item_count(&self) -> usize {
-        match self.step {
-            PickerStep::Source { .. } => self.commits.len() + 1,
-            PickerStep::Base { .. } => self.commits.len(),
-        }
+        self.commits.len()
     }
 
     fn selected(&self) -> usize {
@@ -177,12 +163,11 @@ impl CommitPicker {
 
 pub(crate) fn run(
     commits: Vec<CommitLogEntry>,
-    working_tree_clean: bool,
     prepare: impl FnOnce(ReviewTarget) -> Result<PreparedReview>,
     into_session: impl FnOnce(&PreparedReview) -> Result<ReviewSession>,
 ) -> Result<CommitPickerOutcome> {
     with_terminal(move |terminal| {
-        let mut picker = CommitPicker::new(commits, working_tree_clean);
+        let mut picker = CommitPicker::new(commits);
         match choose_review_target(terminal, &mut picker)? {
             PickerChoice::Review(target) => {
                 let prepared = prepare(target)?;
@@ -190,7 +175,6 @@ pub(crate) fn run(
                 let outcome = run_review(terminal, session)?;
                 Ok(CommitPickerOutcome::Reviewed { prepared, outcome })
             }
-            PickerChoice::NoChanges => Ok(CommitPickerOutcome::NoChanges),
             PickerChoice::Quit => Ok(CommitPickerOutcome::Quit),
         }
     })
@@ -218,14 +202,11 @@ fn render(frame: &mut Frame<'_>, picker: &CommitPicker) {
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(screen);
     let (title, items) = match picker.step {
         PickerStep::Source { .. } => {
-            let mut items = Vec::with_capacity(picker.commits.len() + 1);
-            items.push(working_tree_item(picker.working_tree_clean));
-            items.extend(
-                picker
-                    .commits
-                    .iter()
-                    .map(|commit| commit_item(commit, &picker.now, area.width)),
-            );
+            let items = picker
+                .commits
+                .iter()
+                .map(|commit| commit_item(commit, &picker.now, area.width))
+                .collect::<Vec<_>>();
             (" trv | select commit ".to_owned(), items)
         }
         PickerStep::Base { source, .. } => {
@@ -268,23 +249,6 @@ fn render(frame: &mut Frame<'_>, picker: &CommitPicker) {
             bindings::picker_bindings(context).iter(),
         );
     }
-}
-
-fn working_tree_item(clean: bool) -> ListItem<'static> {
-    let mut spans = vec![
-        Span::styled(
-            "Working tree",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" (uncommitted changes vs HEAD)"),
-    ];
-    if clean {
-        spans.push(Span::styled(
-            " (no changes)",
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-    ListItem::new(Line::from(spans))
 }
 
 fn commit_item(commit: &CommitLogEntry, now: &DateTime<Utc>, area_width: u16) -> ListItem<'static> {
@@ -374,12 +338,64 @@ fn truncate_to_width(text: &str, max_width: usize) -> String {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{CommitLogEntry, CommitPicker, PickerStep, Utc};
+    use super::{CommitLogEntry, CommitPicker, PickerChoice, PickerStep, ReviewTarget, Utc};
+
+    #[test]
+    fn source_picker_lists_only_commits() {
+        let picker = CommitPicker::new(vec![
+            commit("source", Some("parent")),
+            commit("parent", None),
+        ]);
+
+        assert_eq!(
+            picker.item_count(),
+            2,
+            "the source picker must not insert a working-tree row"
+        );
+        assert!(
+            matches!(picker.step, PickerStep::Source { selected: 0 }),
+            "the first commit must be selected by default"
+        );
+    }
+
+    #[test]
+    fn selecting_a_commit_reviews_it_against_its_parent() {
+        let mut picker = CommitPicker::new(vec![
+            commit("source", Some("parent")),
+            commit("parent", None),
+        ]);
+
+        assert!(
+            picker.handle_key(key(KeyCode::Enter)).is_none(),
+            "choosing a source commit must open the base picker"
+        );
+        assert!(
+            matches!(
+                picker.step,
+                PickerStep::Base {
+                    source: 0,
+                    selected: 1
+                }
+            ),
+            "the base picker must preselect the source commit's parent"
+        );
+
+        match picker.handle_key(key(KeyCode::Enter)) {
+            Some(PickerChoice::Review(ReviewTarget {
+                base_sha,
+                source_sha,
+            })) => {
+                assert_eq!(source_sha, "source");
+                assert_eq!(base_sha, "parent");
+            }
+            other => panic!("expected a commit range review, got {other:?}"),
+        }
+    }
 
     #[test]
     fn help_closes_without_changing_either_picker_step() {
         let commits = vec![commit("source", Some("parent")), commit("parent", None)];
-        let mut picker = CommitPicker::new(commits, false);
+        let mut picker = CommitPicker::new(commits);
 
         for close in [KeyCode::Char('?'), KeyCode::Esc, KeyCode::Char('q')] {
             picker.handle_key(key(KeyCode::Char('?')));
@@ -393,7 +409,6 @@ mod tests {
             );
         }
 
-        picker.handle_key(key(KeyCode::Down));
         picker.handle_key(key(KeyCode::Enter));
         assert!(
             matches!(

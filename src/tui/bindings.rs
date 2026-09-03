@@ -179,7 +179,7 @@ const SOURCE_PICKER_BINDINGS: &[Binding<PickerAction>] = &[
     binding(
         &[plain(KeyCode::Enter)],
         "Enter",
-        "Review the working tree or select a commit",
+        "Select a commit to review",
         PickerAction::Select,
     ),
     binding(

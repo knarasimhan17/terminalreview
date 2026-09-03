@@ -66,6 +66,12 @@ impl Repository {
         .context("review revisions require a named branch")
     }
 
+    pub(crate) fn has_uncommitted_changes(&self) -> Result<bool> {
+        let status = git_text(&self.root, &["status", "--porcelain"], None, None, false)
+            .context("failed to inspect working tree status")?;
+        Ok(!status.is_empty())
+    }
+
     pub(crate) fn recent_commits(&self) -> Result<Vec<CommitLogEntry>> {
         let limit = format!("--max-count={RECENT_COMMIT_LIMIT}");
         let output = git_bytes(
@@ -439,6 +445,59 @@ docs: initial commit\0";
                 },
             ],
             "log parsing must preserve every field used by the picker"
+        );
+    }
+
+    #[test]
+    fn has_uncommitted_changes_detects_modified_and_untracked_files() {
+        let directory =
+            tempfile::tempdir().expect("temporary repository creation must succeed for this test");
+        run_git(directory.path(), &["init", "--quiet"]);
+        run_git(
+            directory.path(),
+            &["commit", "--allow-empty", "--quiet", "-m", "initial"],
+        );
+        let repository = Repository::discover(directory.path())
+            .expect("the synthetic repository must be discoverable");
+
+        assert!(
+            !repository
+                .has_uncommitted_changes()
+                .expect("a clean tree must be readable"),
+            "a committed empty repository must be treated as clean"
+        );
+
+        std::fs::write(directory.path().join("tracked.txt"), "changed")
+            .expect("writing a tracked file must succeed");
+        run_git(directory.path(), &["add", "--", "tracked.txt"]);
+        run_git(
+            directory.path(),
+            &["commit", "--quiet", "-m", "add tracked file"],
+        );
+        assert!(
+            !repository
+                .has_uncommitted_changes()
+                .expect("status after commit must be readable"),
+            "committing the tracked file must leave a clean tree"
+        );
+
+        std::fs::write(directory.path().join("tracked.txt"), "edited")
+            .expect("editing the tracked file must succeed");
+        assert!(
+            repository
+                .has_uncommitted_changes()
+                .expect("status after editing must be readable"),
+            "a modified tracked file must count as uncommitted"
+        );
+
+        run_git(directory.path(), &["checkout", "--", "tracked.txt"]);
+        std::fs::write(directory.path().join("untracked.txt"), "new")
+            .expect("writing an untracked file must succeed");
+        assert!(
+            repository
+                .has_uncommitted_changes()
+                .expect("status after creating an untracked file must be readable"),
+            "an untracked file must count as uncommitted"
         );
     }
 

@@ -47,15 +47,16 @@ trv revs
 trv --stdout
 ```
 
-`trv` opens a picker with the working tree preselected, followed by the latest
-200 commits on the current branch. Commits not found on any remote-tracking ref
+If the working tree has uncommitted changes, `trv` reviews them against `HEAD`
+directly. If the working tree is clean, it opens a picker of the latest 200
+commits on the current branch. Commits not found on any remote-tracking ref
 are marked as unpushed. Selecting a commit opens a second picker for its base,
 preselected to the commit's first parent.
 
 `trv -w` (or `trv --working-tree`) reviews the current working tree against
-`HEAD` directly. `trv -r <revset>` reviews a commit or revision range directly.
-Both flags skip the picker. Exporting comments creates the next immutable
-revision for the current repository and branch.
+`HEAD` directly, even when it is clean. `trv -r <revset>` reviews a commit or
+revision range directly. Both flags skip the picker. Exporting comments creates
+the next immutable revision for the current repository and branch.
 
 `trv revs` lists the stored revisions. `trv --stdout` writes exported comments
 to standard output instead of copying them to the clipboard, which lets an
