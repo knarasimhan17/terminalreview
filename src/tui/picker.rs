@@ -8,8 +8,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::diff::ParsedDiff;
 use crate::git::{CommitLogEntry, PreparedReview};
+use crate::session::ReviewSession;
 
 use super::{ReviewOutcome, TrvTerminal, bindings, run_review, with_terminal};
 
@@ -179,14 +179,15 @@ pub(crate) fn run(
     commits: Vec<CommitLogEntry>,
     working_tree_clean: bool,
     prepare: impl FnOnce(ReviewTarget) -> Result<PreparedReview>,
+    into_session: impl FnOnce(&PreparedReview) -> Result<ReviewSession>,
 ) -> Result<CommitPickerOutcome> {
     with_terminal(move |terminal| {
         let mut picker = CommitPicker::new(commits, working_tree_clean);
         match choose_review_target(terminal, &mut picker)? {
             PickerChoice::Review(target) => {
                 let prepared = prepare(target)?;
-                let diff = ParsedDiff::parse(&prepared.diff);
-                let outcome = run_review(terminal, diff)?;
+                let session = into_session(&prepared)?;
+                let outcome = run_review(terminal, session)?;
                 Ok(CommitPickerOutcome::Reviewed { prepared, outcome })
             }
             PickerChoice::NoChanges => Ok(CommitPickerOutcome::NoChanges),

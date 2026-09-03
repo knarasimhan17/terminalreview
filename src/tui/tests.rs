@@ -4,9 +4,56 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 
 use crate::diff::ParsedDiff;
-use crate::model::Side;
+use crate::model::{Comment, Side};
+use crate::session::{FrozenReview, LiveReview, ReviewSession, ViewKind};
 
 use super::{App, DiffLayout, DiffRow, Mode, dock_bottom, footer_text, render};
+
+const LIVE_DIFF: &str = "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-old
++live
+";
+const FROZEN_DIFF: &str = "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-old
++frozen
+";
+const SINCE_DIFF: &str = "\
+diff --git file.rs file.rs
+--- file.rs
++++ file.rs
+@@ -1 +1 @@
+-frozen
++live
+";
+
+fn two_round_session() -> ReviewSession {
+    ReviewSession {
+        live: Some(LiveReview {
+            vs_main: ParsedDiff::parse(LIVE_DIFF),
+            vs_previous: Some((1, ParsedDiff::parse(SINCE_DIFF))),
+            comments: Vec::new(),
+        }),
+        frozen: vec![FrozenReview {
+            rev: 1,
+            diff: ParsedDiff::parse(FROZEN_DIFF),
+            comments: vec![Comment::open(
+                "file.rs".to_owned(),
+                1,
+                Side::New,
+                "from rev-1".to_owned(),
+            )],
+        }],
+        initial: ViewKind::LiveMain,
+    }
+}
 
 fn click(column: u16, row: u16) -> MouseEvent {
     MouseEvent {
@@ -784,4 +831,102 @@ fn mouse_scroll_moves_the_diff_selection() {
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(app.selected_diff, 0);
+}
+
+#[test]
+fn current_round_starts_clean_and_frozen_rev_keeps_its_comments() {
+    let mut app = App::from_session(two_round_session());
+    assert_eq!(app.viewing, ViewKind::LiveMain);
+    assert!(
+        app.comments.is_empty(),
+        "the current round must not show rev-1 comments"
+    );
+    assert!(!app.read_only);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.viewing, ViewKind::Frozen(1));
+    assert_eq!(
+        app.comments
+            .iter()
+            .map(|comment| comment.body.as_str())
+            .collect::<Vec<_>>(),
+        ["from rev-1"]
+    );
+    assert!(app.read_only);
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert!(
+        matches!(app.mode, Mode::Diff),
+        "frozen revisions must not accept new comments"
+    );
+}
+
+#[test]
+fn switching_back_to_current_does_not_keep_frozen_comments() {
+    let mut app = App::from_session(two_round_session());
+    app.select_diff(3);
+    app.start_comment();
+    let Mode::CommentInput { body, .. } = &mut app.mode else {
+        panic!("the current round must accept comments");
+    };
+    body.push_str("rev-2 note");
+    app.handle_input_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    app.viewing = ViewKind::Frozen(1);
+    app.load_view();
+    assert_eq!(app.comments[0].body, "from rev-1");
+
+    app.viewing = ViewKind::LiveMain;
+    app.load_view();
+    assert_eq!(
+        app.comments
+            .iter()
+            .map(|comment| comment.body.as_str())
+            .collect::<Vec<_>>(),
+        ["rev-2 note"],
+        "live comments must come back when leaving the rev-1 viewer"
+    );
+}
+
+#[test]
+fn interdiff_view_is_read_only_and_hides_comments() {
+    let mut app = App::from_session(two_round_session());
+    app.viewing = ViewKind::LiveSince(1);
+    app.load_view();
+    assert!(app.read_only);
+    assert!(
+        app.comments.is_empty(),
+        "the since-last-rev view must stay clean"
+    );
+    assert!(
+        app.diff.files[0]
+            .lines
+            .iter()
+            .any(|line| line.text == "live"),
+        "the interdiff must show the current tree against rev-1"
+    );
+}
+
+#[test]
+fn same_tree_reopen_starts_on_the_frozen_revision() {
+    let app = App::from_session(ReviewSession {
+        live: None,
+        frozen: vec![FrozenReview {
+            rev: 1,
+            diff: ParsedDiff::parse(FROZEN_DIFF),
+            comments: vec![Comment::open(
+                "file.rs".to_owned(),
+                1,
+                Side::New,
+                "saved".to_owned(),
+            )],
+        }],
+        initial: ViewKind::Frozen(1),
+    });
+    assert_eq!(app.viewing, ViewKind::Frozen(1));
+    assert_eq!(app.comments[0].body, "saved");
+    assert!(app.read_only);
 }

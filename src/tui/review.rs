@@ -93,6 +93,9 @@ impl App {
     }
 
     pub(super) fn start_comment(&mut self) {
+        if !self.ensure_writable() {
+            return;
+        }
         let Some(anchor) = self.selected_anchor().cloned() else {
             self.status = Some("Select a changed or context line to comment.".to_owned());
             return;
@@ -106,6 +109,9 @@ impl App {
     }
 
     pub(super) fn edit_comment(&mut self, index: usize) {
+        if !self.ensure_writable() {
+            return;
+        }
         let Some(comment) = self.comments.get(index) else {
             return;
         };
@@ -131,6 +137,9 @@ impl App {
     }
 
     pub(super) fn delete_comment(&mut self, index: usize) {
+        if !self.ensure_writable() {
+            return;
+        }
         if index >= self.comments.len() {
             return;
         }
@@ -210,7 +219,8 @@ impl App {
     }
 
     pub(super) fn request_quit(&mut self) -> Option<ReviewOutcome> {
-        if self.comments.is_empty() {
+        self.stash_live_comments();
+        if self.pending_comments() == 0 {
             return Some(ReviewOutcome::Quit);
         }
         let previous = match self.mode {

@@ -67,6 +67,7 @@ pub(super) enum ReviewAction {
     EditComment,
     DeleteComment,
     OpenComments,
+    OpenRevisions,
     ReturnToDiff,
     ToggleInlineComments,
     ToggleLayout,
@@ -370,6 +371,13 @@ const REVIEW_BINDINGS: &[ReviewBinding] = &[
         "s",
         "Switch unified and side-by-side views",
         ReviewAction::ToggleLayout,
+    ),
+    review_binding(
+        ReviewScope::All,
+        &[plain(KeyCode::Char('r'))],
+        "r",
+        "Switch between the current review and saved revisions",
+        ReviewAction::OpenRevisions,
     ),
     review_binding(
         ReviewScope::All,

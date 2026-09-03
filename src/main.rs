@@ -4,6 +4,7 @@ mod export;
 mod git;
 mod model;
 mod persistence;
+mod session;
 mod tui;
 
 use std::env;
@@ -14,10 +15,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::cli::{Cli, Command};
-use crate::diff::ParsedDiff;
 use crate::export::{copy_to_clipboard, format_comments};
 use crate::git::{PreparedReview, Repository};
 use crate::persistence::{list_revisions, persist_revision};
+use crate::session::ReviewSession;
 use crate::tui::{CommitPickerOutcome, ReviewOutcome, ReviewTarget};
 
 fn main() -> ExitCode {
@@ -69,24 +70,29 @@ fn run_review(
     let thread = repository.current_thread()?;
     if revset.is_some() || working_tree {
         let prepared = repository.prepare_review(revset)?;
-        let diff = ParsedDiff::parse(&prepared.diff);
-        let outcome = tui::run(diff)?;
+        let session = open_review_session(repository, &thread, &prepared)?;
+        let outcome = tui::run(session)?;
         return finish_review(repository, &thread, prepared, outcome, stdout);
     }
 
     let commits = repository.recent_commits()?;
     let working_tree = repository.prepare_review(None)?;
     let working_tree_clean = working_tree.diff.is_empty();
-    let outcome = tui::run_picker(commits, working_tree_clean, move |target| match target {
-        ReviewTarget::WorkingTree => Ok(working_tree),
-        ReviewTarget::CommitRange {
-            base_sha,
-            source_sha,
-        } => {
-            let revset = format!("{base_sha}..{source_sha}");
-            repository.prepare_review(Some(&revset))
-        }
-    })?;
+    let outcome = tui::run_picker(
+        commits,
+        working_tree_clean,
+        move |target| match target {
+            ReviewTarget::WorkingTree => Ok(working_tree),
+            ReviewTarget::CommitRange {
+                base_sha,
+                source_sha,
+            } => {
+                let revset = format!("{base_sha}..{source_sha}");
+                repository.prepare_review(Some(&revset))
+            }
+        },
+        |prepared| open_review_session(repository, &thread, prepared),
+    )?;
 
     match outcome {
         CommitPickerOutcome::Reviewed { prepared, outcome } => {
@@ -126,4 +132,13 @@ fn finish_review(
     }
 
     Ok(())
+}
+
+fn open_review_session(
+    repository: &Repository,
+    thread: &str,
+    prepared: &PreparedReview,
+) -> Result<ReviewSession> {
+    let revisions = list_revisions(repository.git_dir(), thread)?;
+    ReviewSession::open(repository, prepared, &revisions)
 }
