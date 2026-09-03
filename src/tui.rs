@@ -105,6 +105,7 @@ enum DiffRow {
 }
 
 impl App {
+    #[cfg(test)]
     fn new(diff: ParsedDiff) -> Self {
         Self::from_session(ReviewSession::live_only(diff))
     }

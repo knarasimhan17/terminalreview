@@ -34,6 +34,7 @@ pub(crate) struct ReviewSession {
 }
 
 impl ReviewSession {
+    #[cfg(test)]
     pub(crate) fn live_only(diff: ParsedDiff) -> Self {
         Self {
             live: Some(LiveReview {
